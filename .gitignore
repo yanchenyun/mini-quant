@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# 虚拟环境
+.venv/
+venv/
+env/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# 项目本地数据 / 缓存
+data_cache/
+*.parquet
+*.duckdb
+*.duckdb.wal
+
+# 敏感信息
+.env
+.env.local
+*.pem
+*.key
+
+# 日志
+*.log
+logs/
+# 敏感配置（含数据库密码）：入库只提交模板 settings.example.yaml
+config/settings.yaml

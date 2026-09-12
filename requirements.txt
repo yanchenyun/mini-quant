@@ -1,0 +1,7 @@
+baostock>=0.8.8
+pandas>=2.0
+numpy>=1.26
+PyMySQL>=1.1
+PyYAML>=6.0
+fastapi>=0.110
+uvicorn>=0.29

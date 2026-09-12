@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>mini-quant 回测控制台</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: "PingFang SC", "Microsoft YaHei", sans-serif; background: #f5f6f8; color: #2c2c2a; padding: 20px; }
+  h1 { font-size: 18px; margin-bottom: 16px; }
+  .toolbar { background: #fff; border-radius: 8px; padding: 14px 16px; display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; box-shadow: 0 1px 3px rgba(0,0,0,.06); margin-bottom: 16px; }
+  .field label { display: block; font-size: 12px; color: #888; margin-bottom: 4px; }
+  .field input, .field select { height: 30px; border: 1px solid #d3d1c7; border-radius: 6px; padding: 0 8px; font-size: 13px; min-width: 110px; background: #fff; }
+  button { height: 32px; padding: 0 20px; background: #185fa5; color: #fff; border: 0; border-radius: 6px; font-size: 13px; cursor: pointer; }
+  button:hover { background: #0c447c; }
+  button:disabled { background: #b5d4f4; cursor: wait; }
+  #status { font-size: 12px; color: #993c1d; align-self: center; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 16px; }
+  .card { background: #fff; border-radius: 8px; padding: 12px 14px; box-shadow: 0 1px 3px rgba(0,0,0,.06); }
+  .card .k { font-size: 12px; color: #888; }
+  .card .v { font-size: 20px; font-weight: 600; margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .v.pos { color: #c02020; } .v.neg { color: #0a7a3d; }
+  .charts { display: grid; gap: 16px; }
+  .chart { background: #fff; border-radius: 8px; padding: 10px; box-shadow: 0 1px 3px rgba(0,0,0,.06); height: 420px; }
+  .chart.small { height: 320px; }
+  table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 8px; overflow: hidden; font-size: 12.5px; box-shadow: 0 1px 3px rgba(0,0,0,.06); }
+  th, td { padding: 7px 10px; text-align: right; border-bottom: 1px solid #f0efe9; }
+  th:nth-child(1), td:nth-child(1), th:nth-child(2), td:nth-child(2) { text-align: left; }
+  th { background: #f1efe8; color: #555; font-weight: 500; }
+  .buy { color: #c02020; } .sell { color: #0a7a3d; }
+</style>
+</head>
+<body>
+<h1>mini-quant · 策略回测</h1>
+
+<div class="toolbar">
+  <div class="field"><label>证券代码</label><select id="code"></select></div>
+  <div class="field"><label>频率</label><select id="freq" style="width:90px">
+    <option value="1d" selected>日线</option>
+    <option value="5min">5分钟</option>
+  </select></div>
+  <div class="field"><label>策略</label><select id="strategy" style="width:110px">
+    <option value="double_ma" selected>双均线</option>
+    <option value="factor_momentum">动量因子</option>
+  </select></div>
+  <div class="field"><label>开始日期</label><input id="start" value="2022-01-01"></div>
+  <div class="field"><label>结束日期</label><input id="end" value="2025-12-31"></div>
+  <div class="field"><label>快线周期</label><input id="fast" value="5" style="width:70px"></div>
+  <div class="field"><label>慢线周期</label><input id="slow" value="20" style="width:70px"></div>
+  <div class="field"><label>动量窗口</label><input id="window" value="20" style="width:70px"></div>
+  <button id="run">运行回测</button>
+  <span id="status"></span>
+</div>
+
+<div class="cards" id="cards"></div>
+
+<div class="charts">
+  <div id="kchart" class="chart"></div>
+  <div id="echart" class="chart small"></div>
+</div>
+
+<h1 style="margin:16px 0 10px">成交明细</h1>
+<table id="trades"><thead><tr>
+  <th>日期</th><th>方向</th><th>价格</th><th>数量</th><th>佣金</th><th>本轮盈亏</th>
+</tr></thead><tbody></tbody></table>
+
+<script>
+const $ = id => document.getElementById(id);
+const kchart = echarts.init($('kchart'));
+const echart = echarts.init($('echart'));
+
+// 涨红跌绿（A股惯例）
+const UP = '#c02020', DOWN = '#0a7a3d';
+
+async function loadCodes() {
+  try {
+    const r = await fetch('/api/codes');
+    const codes = await r.json();
+    $('code').innerHTML = codes.map(c => `<option>${c}</option>`).join('');
+  } catch (e) { $('status').textContent = '读取代码列表失败（数据库未就绪？）'; }
+}
+
+function cardHTML(k, v, cls) {
+  return `<div class="card"><div class="k">${k}</div><div class="v ${cls || ''}">${v}</div></div>`;
+}
+
+function render(data) {
+  const m = data.metrics, eq = data.equity_curve, k = data.kline;
+  const cls = x => x > 0 ? 'pos' : (x < 0 ? 'neg' : '');
+  const fmtPct = x => x == null ? '-' : x + '%';
+
+  $('cards').innerHTML = [
+    cardHTML('总收益率', fmtPct(m.total_return), cls(m.total_return)),
+    cardHTML('年化收益', fmtPct(m.annual_return), cls(m.annual_return)),
+    cardHTML('最大回撤', fmtPct(m.max_drawdown), cls(m.max_drawdown)),
+    cardHTML('夏普比率', m.sharpe ?? '-'),
+    cardHTML('卡玛比率', m.calmar ?? '-'),
+    cardHTML('胜率', fmtPct(m.win_rate)),
+    cardHTML('盈亏比', m.profit_factor ?? '-'),
+    cardHTML('平仓次数', m.trade_count ?? 0),
+    cardHTML('期末权益', (m.final_equity ?? 0).toLocaleString()),
+    cardHTML('总佣金', (m.total_commission ?? 0).toLocaleString()),
+  ].join('');
+
+  const markArea = [];
+  const buys = data.buys.map(b => { markArea.push([{ xAxis: b[0], itemStyle: { color: 'rgba(192,32,32,.04)' } }]); return b; });
+  const sellIdx = {}; data.sells.forEach(s => sellIdx[s[0]] = s[3]);
+
+  const freqLabel = data.params.freq === '5min' ? '5分钟' : '日线';
+  const stratLabel = data.params.strategy === 'factor_momentum'
+    ? `momentum_${data.params.window}` : `MA${data.params.fast}/${data.params.slow}`;
+  kchart.setOption({
+    title: { text: `${data.params.code} · ${stratLabel} · ${freqLabel}`, left: 10, textStyle: { fontSize: 13 } },
+    tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } },
+    legend: { top: 0, right: 10, data: ['MA' + data.params.fast, 'MA' + data.params.slow], textStyle: { fontSize: 11 } },
+    grid: [{ left: 60, right: 20, top: 40, height: '68%' }],
+    xAxis: [{ type: 'category', data: k.dates, boundaryGap: true }],
+    yAxis: [{ scale: true }],
+    dataZoom: [{ type: 'inside', start: 0, end: 100 }, { type: 'slider', top: '86%', height: 18 }],
+    series: [
+      { name: 'K线', type: 'candlestick', data: k.dates.map((d, i) => [k.open[i], k.close[i], k.low[i], k.high[i]]),
+        itemStyle: { color: UP, color0: DOWN, borderColor: UP, borderColor0: DOWN } },
+      { name: 'MA' + data.params.fast, type: 'line', data: k.ma_fast, showSymbol: false, lineStyle: { width: 1.2 }, color: '#185fa5' },
+      { name: 'MA' + data.params.slow, type: 'line', data: k.ma_slow, showSymbol: false, lineStyle: { width: 1.2 }, color: '#ef9f27' },
+      { name: '买入', type: 'scatter', data: buys.map(b => [b[0], b[1]]),
+        symbol: 'triangle', symbolSize: 9, itemStyle: { color: UP },
+        label: { show: false }, tooltip: { formatter: p => '买入 ' + p.value[0] } },
+      { name: '卖出', type: 'scatter', data: data.sells.map(s => [s[0], s[1]]),
+        symbol: 'path://M0,0L10,0L5,8Z', symbolSize: 9, itemStyle: { color: DOWN }, tooltip: { formatter: p => '卖出 ' + p.value[0] } },
+    ]
+  }, true);
+
+  echart.setOption({
+    title: { text: '净值曲线 vs 买入持有（基准）', left: 10, textStyle: { fontSize: 13 } },
+    tooltip: { trigger: 'axis' },
+    legend: { top: 0, right: 10, data: ['策略净值', '买入持有'], textStyle: { fontSize: 11 } },
+    grid: { left: 70, right: 20, top: 40, bottom: 40 },
+    xAxis: { type: 'category', data: eq.map(r => r.date) },
+    yAxis: { scale: true, axisLabel: { formatter: v => (v / 10000).toFixed(0) + '万' } },
+    series: [
+      { name: '策略净值', type: 'line', data: eq.map(r => r.equity), showSymbol: false, lineStyle: { width: 1.5 }, color: '#534ab7' },
+      { name: '买入持有', type: 'line', data: data.benchmark, showSymbol: false, lineStyle: { width: 1, type: 'dashed' }, color: '#888780' },
+    ]
+  }, true);
+
+  const rows = data.buys.map(b => `<tr><td>${b[0]}</td><td class="buy">买入</td><td>${b[1]}</td><td>${b[2]}</td><td>${(b[3] ?? 0).toLocaleString()}</td><td>-</td></tr>`)
+    .concat(data.sells.map(s => `<tr><td>${s[0]}</td><td class="sell">卖出</td><td>${s[1]}</td><td>${s[2]}</td><td>${(s[4] ?? 0).toLocaleString()}</td><td class="${(s[3] || 0) > 0 ? 'buy' : 'sell'}">${s[3] == null ? '-' : s[3].toLocaleString()}</td></tr>`));
+  $('trades').querySelector('tbody').innerHTML =
+    rows.sort((a, b) => a.match(/\d{4}-\d{2}-\d{2}/)[0].localeCompare(b.match(/\d{4}-\d{2}-\d{2}/)[0])).join('')
+    || '<tr><td colspan="6" style="text-align:center;color:#888">无成交</td></tr>';
+}
+
+$('run').onclick = async () => {
+  $('run').disabled = true; $('status').textContent = '回测运行中…';
+  try {
+    const p = new URLSearchParams({
+      code: $('code').value, start: $('start').value, end: $('end').value,
+      fast: $('fast').value, slow: $('slow').value, freq: $('freq').value,
+      strategy: $('strategy').value, window: $('window').value,
+    });
+    const r = await fetch('/api/backtest?' + p);
+    if (!r.ok) throw new Error((await r.json()).detail || r.statusText);
+    render(await r.json());
+    $('status').textContent = '';
+  } catch (e) { $('status').textContent = '失败：' + e.message; }
+  finally { $('run').disabled = false; }
+};
+
+window.onresize = () => { kchart.resize(); echart.resize(); };
+loadCodes();
+</script>
+</body>
+</html>
