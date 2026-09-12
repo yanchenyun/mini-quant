@@ -57,7 +57,7 @@ class Portfolio:
 
         self.fills.append(fill)
         self.trades.append(TradeRecord(
-            date=fill.filled_at, code=o.code, side=o.side.value,
+            date=fill.filled_at, code=o.code, side=o.side,
             price=fill.filled_price, quantity=fill.filled_qty,
             commission=round(fill.commission, 2), profit=profit,
         ))
