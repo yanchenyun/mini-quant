@@ -2,6 +2,11 @@
 # 使用：复制为 settings.yaml（同目录）并填入真实值——settings.yaml 已被 .gitignore 排除，不会入库。
 # 敏感项（密码）也可用环境变量覆盖：
 #   QUANT_DB_HOST / QUANT_DB_PORT / QUANT_DB_USER / QUANT_DB_PASSWORD / QUANT_DB_NAME
+
+# 默认数据源：baostock（免费稳定）或 akshare（免费聚合多源）
+# 也可通过 CLI --source 参数临时覆盖
+data_source: baostock
+
 database:
   host: 127.0.0.1
   port: 3306

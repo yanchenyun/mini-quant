@@ -1,4 +1,5 @@
 baostock>=0.8.8
+akshare>=1.14
 pandas>=2.0
 numpy>=1.26
 PyMySQL>=1.1

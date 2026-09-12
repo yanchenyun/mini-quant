@@ -10,6 +10,7 @@ from ..backtest.sim_broker import CostModel
 from ..config import BacktestSettings, Settings, load_settings
 from ..core.abstractions import Strategy
 from ..data.baostock_source import BaostockSource
+from ..data.akshare_source import AkshareSource
 from ..data.mysql_repo import MySQLBarRepo
 from ..factor import FactorEngine, available as available_factors, get as get_factor
 from ..strategy.double_ma import DoubleMAStrategy
@@ -20,19 +21,29 @@ def get_repo(settings: Settings | None = None) -> MySQLBarRepo:
     return MySQLBarRepo(settings.db)
 
 
-def get_source() -> BaostockSource:
-    return BaostockSource()
+def get_source(name: str = "baostock"):
+    """按名称获取数据源实例（工厂方法）。
+
+    可选：'baostock'（默认）、'akshare'。
+    """
+    sources = {
+        "baostock": BaostockSource,
+        "akshare": AkshareSource,
+    }
+    if name not in sources:
+        raise ValueError(f"未知数据源: {name}（可选: {list(sources)}）")
+    return sources[name]()
 
 
 def ingest_bars(code: str, start: str, end: str | None = None,
                 adjust: str = "2", freq: str = "1d",
+                source: str = "baostock",
                 init_schema: bool = False) -> int:
     """增量抓取并存入 MySQL。从库中已有最新 bar 的当日/次日续抓。
 
-    分钟线的增量粒度为"日"（baostock start_date 只接受日期）：
-    从最新 bar 的归属交易日整天重抓，upsert 幂等不产生重复。
+    source: 数据源名称，'baostock'（默认）或 'akshare'。
     """
-    repo, src = get_repo(), get_source()
+    repo, src = get_repo(), get_source(source)
     if init_schema:
         repo.init_schema()
 

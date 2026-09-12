@@ -24,7 +24,7 @@ def main() -> None:
 
     sub.add_parser("init-schema", help="初始化 MySQL 库表（幂等：行情日表/分钟表/因子表）")
 
-    p_in = sub.add_parser("ingest", help="Baostock 行情增量入库")
+    p_in = sub.add_parser("ingest", help="行情增量入库（支持多数据源）")
     p_in.add_argument("--code", required=True, help="证券代码，如 sh.600000 / sz.000001")
     p_in.add_argument("--start", required=True, help="起始日期 YYYY-MM-DD")
     p_in.add_argument("--end", default=None, help="结束日期，默认今天")
@@ -32,6 +32,8 @@ def main() -> None:
                       help="复权：1后复权 2前复权 3不复权，默认2")
     p_in.add_argument("--freq", default="1d", choices=["1d", "5min"],
                       help="频率：1d 日线 5min 5分钟线，默认1d")
+    p_in.add_argument("--source", default="baostock", choices=["baostock", "akshare"],
+                      help="数据源：baostock（默认免费稳定）/ akshare（免费聚合多源）")
 
     p_cf = sub.add_parser("compute-factors",
                           help="计算因子并存入 MySQL（幂等 upsert；不传 --factors 则计算全部内置因子）")
@@ -72,7 +74,8 @@ def main() -> None:
         print("库表初始化完成（行情日/分钟表 + 因子表 dwd_factor_value_i）")
 
     elif args.command == "ingest":
-        ingest_bars(args.code, args.start, args.end, args.adjust, freq=args.freq)
+        ingest_bars(args.code, args.start, args.end, args.adjust,
+                    freq=args.freq, source=args.source)
 
     elif args.command == "compute-factors":
         names = args.factors.split(",") if args.factors else None
