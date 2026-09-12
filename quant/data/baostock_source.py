@@ -51,7 +51,8 @@ def _login():
 class BaostockSource:
     name = "baostock"
 
-    def fetch_bars(self, code: str, start: str, end: str,
+    @staticmethod
+    def fetch_bars(code: str, start: str, end: str,
                    freq: str = "1d", adjust: str = "2") -> pd.DataFrame:
         """按频率拉取行情，返回统一列（见 MarketDataSource 协议注释）。
 
@@ -103,11 +104,13 @@ class BaostockSource:
         return df
 
     # ── 向后兼容别名 ─────────────────────────────────────
-    def fetch_daily(self, code: str, start: str, end: str,
+    @staticmethod
+    def fetch_daily(code: str, start: str, end: str,
                     adjust: str = "2") -> pd.DataFrame:
-        return self.fetch_bars(code, start, end, freq="1d", adjust=adjust)
+        return BaostockSource.fetch_bars(code, start, end, freq="1d", adjust=adjust)
 
-    def fetch_trade_dates(self, start: str, end: str) -> list[str]:
+    @staticmethod
+    def fetch_trade_dates(start: str, end: str) -> list[str]:
         """交易日历（用于增量校验）。"""
         with _login():
             rs = bs.query_trade_dates(start_date=start, end_date=end)

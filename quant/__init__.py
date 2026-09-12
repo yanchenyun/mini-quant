@@ -3,4 +3,4 @@
 分层（依赖箭头永远指向 core 的抽象）：
     webapp/app  ──▶  backtest / strategy  ──▶  core(抽象)  ◀──  data(实现)
 """
-__version__ = "0.1.0"
+__version__ = "0.3.0"

@@ -42,7 +42,11 @@ class Portfolio:
 
         if o.side == Side.BUY:
             self.cash -= gross + fill.commission
-            pos.on_buy(fill.filled_qty, fill.filled_price)
+            # avg_cost 须含买入佣金摊薄（on_buy 契约：price_incl_cost 为含佣单价），
+            # 否则卖出利润公式 (sell_price - avg_cost)*qty - sell_commission
+            # 会重复扣减买入侧费用（avg_cost 偏低 → 利润偏低）。
+            pos.on_buy(fill.filled_qty,
+                       fill.filled_price + fill.commission / fill.filled_qty)
             profit = None
         else:
             self.cash += gross - fill.commission

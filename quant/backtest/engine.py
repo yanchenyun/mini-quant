@@ -67,8 +67,10 @@ class BacktestEngine:
         self.portfolio = Portfolio(init_cash=init_cash)
         self.bars = self._normalize(bars)
         self._factor_dfs = self._attach_factors(factor_frame)
-        self._history: dict[str, pd.Series] = {}   # code → 收盘价累计序列
+        self._history: dict[str, list[tuple[str, float]]] = {}  # code → [(dt, close), ...]
         self._prices: dict[str, float] = {}        # code → 最新收盘价（用于净值计算）
+        self._today_bar: dict[str, Bar] = {}       # code → 当日最新 bar（风控/撮合用）
+        self._seen: dict[str, int] = {}            # code → 已推进 bar 数（因子切片用）
         self._view = self._PortfolioViewImpl(self.portfolio)
 
     # 引擎自身作为 OrderSink（策略只认识 OrderSink 协议，不认识引擎）
@@ -128,12 +130,15 @@ class BacktestEngine:
 
     # ── 主循环：按交易日分组驱动日界，一天内按 dt 逐 bar 推进 ────────
     def run(self) -> BacktestResult:
-        self._today_bar: dict[str, Bar] = {}
-        self._seen: dict[str, int] = {}          # code → 已推进 bar 数（因子切片用）
+        self._today_bar = {}
+        self._seen = {}
+        self._history = {}
         self.strategy.on_init(StrategyContext(
             pd.Series(dtype=float), "", self._view, self, 0.0))
 
-        for trade_date, day_df in self.bars.groupby("trade_date", sort=True):
+        for _td, day_df in self.bars.groupby("trade_date", sort=True):
+            # _normalize 已保证 trade_date 列为 str，str() 对任意类型均有定义
+            trade_date: str = str(_td)
             self.portfolio.on_new_day()            # T+1 解禁（每个交易日仅一次）
             first_bar_of_day = True
 
@@ -145,11 +150,8 @@ class BacktestEngine:
                 for fill in self.broker.settle(bar):
                     self.portfolio.apply_fill(fill)
 
-                # ② 累计历史并构造上下文（策略只看得到截至本 bar 的数据）
-                hist = self._history.setdefault(
-                    bar.code, pd.Series(dtype=float))
-                self._history[bar.code] = pd.concat(
-                    [hist, pd.Series([bar.close], index=[bar.dt])])
+                # ② 累计历史（list append O(1)，仅构造 ctx 时转 Series）
+                self._history.setdefault(bar.code, []).append((bar.dt, bar.close))
                 self._prices[bar.code] = bar.close
 
                 # ③ 因子只读视图：iloc[:n] 切片，结构上排除未来行
@@ -158,8 +160,13 @@ class BacktestEngine:
                 accessor = (FactorAccessor(self._factor_dfs[bar.code].iloc[:n])
                             if bar.code in self._factor_dfs else None)
 
+                hist_pairs = self._history[bar.code]
+                hist_series = pd.Series(
+                    [p[1] for p in hist_pairs],
+                    index=[p[0] for p in hist_pairs],
+                )
                 ctx = StrategyContext(
-                    self._history[bar.code], bar.dt, self._view, self,
+                    hist_series, bar.dt, self._view, self,
                     bar.close, factors=accessor)
 
                 # ④ 日始钩子：仅当日第一根 bar 触发（撮合后、on_bar 前）
@@ -187,8 +194,8 @@ class BacktestEngine:
     @staticmethod
     def _to_bar(row, trade_date: str) -> Bar:
         """将 DataFrame 行转换为 Bar 值对象（处理 None / 类型转换）。"""
-        ts = getattr(row, "trade_status", None)
-        ts = 1 if ts is None else int(ts)   # 注意 0（停牌）是有效值，不可用 or 兆底
+        raw_ts: int | None = getattr(row, "trade_status", None)
+        ts: int = 1 if raw_ts is None else int(raw_ts)   # 注意 0（停牌）是有效值，不可用 or 兆底
         return Bar(
             code=row.code, dt=str(row.dt), trade_date=str(trade_date),
             open=float(row.open), high=float(row.high),

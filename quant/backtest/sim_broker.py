@@ -8,7 +8,7 @@
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from ..core.models import Bar, Fill, Order, Side
 
@@ -59,6 +59,7 @@ class SimBroker:
             if result == _SKIP:
                 still_pending.append(order)   # 限价单跳空未成交，保留待下根 bar
                 continue
+            assert isinstance(result, Fill)
             fills.append(result)
         self._pending = still_pending
         return fills
@@ -89,22 +90,22 @@ class SimBroker:
             if bar.pre_close > 0:
                 upper = bar.pre_close * (1 + self.cost.price_limit)
                 base = min(base, upper)
-            # 开盘跳空高于限价但盘中回落触及 → 以限价成交（订单簿排队价）
-            if order.price and bar.open > order.price:
-                price = order.price
+            if order.price:
+                # 限价单：开盘跳空高于限价但盘中回落触及 → 以限价成交
+                price = order.price if bar.open > order.price else min(order.price, base)
             else:
-                price = min(order.price, base) if order.price else base
+                price = base
         else:
             base = bar.open * (1 - self.cost.slippage)
             # 跌停开盘但盘中打开：成交价不能低于跌停价
             if bar.pre_close > 0:
                 lower = bar.pre_close * (1 - self.cost.price_limit)
                 base = max(base, lower)
-            # 开盘跳空低于限价但盘中反弹触及 → 以限价成交
-            if order.price and bar.open < order.price:
-                price = order.price
+            if order.price:
+                # 限价单：开盘跳空低于限价但盘中反弹触及 → 以限价成交
+                price = order.price if bar.open < order.price else max(order.price, base)
             else:
-                price = max(order.price, base) if order.price else base
+                price = base
 
         amount = price * order.quantity
         commission = self.cost.commission(order.side, amount)

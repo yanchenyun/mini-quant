@@ -186,9 +186,8 @@ class FactorProbe(Strategy):
     """因子探针：逐 bar 记录 ctx.factor 与 factor_history 的末值和长度，
     用于验证防未来访问（值与全量因果计算逐点一致，长度随 bar 增长）。"""
 
-    required_factors = ["momentum_20"]
-
     def __init__(self):
+        self.required_factors = ["momentum_20"]
         self.snapshots: list[tuple[str, float, int]] = []
 
     def on_init(self, ctx: StrategyContext) -> None:
@@ -204,7 +203,7 @@ def test_factor() -> None:
     names = ["momentum_20", "volatility_20", "bias_20", "volume_ratio_5_20"]
 
     # 1) 计算正确性 + 预热语义
-    frame = FactorEngine().compute(bars, names)
+    frame = FactorEngine.compute(bars, names)
     assert list(frame.columns) == ["code", "dt", *names], "输出列序应为 code/dt/因子列"
     assert len(frame) == len(bars), "因子帧行数应与行情一致"
     close = bars["close"].to_numpy()

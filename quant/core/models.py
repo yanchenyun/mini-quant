@@ -1,7 +1,7 @@
 """领域模型（值对象，不可变）。core 包零第三方依赖，是全系统唯一的“宪法”。"""
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 
 

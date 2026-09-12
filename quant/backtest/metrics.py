@@ -54,8 +54,9 @@ def compute_metrics(equity_curve: list[dict], trades: list,
         "total_return": _pct(total_return),
         "annual_return": _pct(annual_return),
         "max_drawdown": _pct(max_dd),
-        "max_dd_range": f"{dd_start:%Y-%m-%d} ~ {dd_end:%Y-%m-%d}"
-                        if dd_start is not None else "-",
+        "max_dd_range": (f"{pd.Timestamp(dd_start).strftime('%Y-%m-%d')} ~ "
+                         f"{pd.Timestamp(dd_end).strftime('%Y-%m-%d')}")
+                        if dd_start is not None and dd_end is not None else "-",
         "sharpe": round(sharpe, 3),
         "calmar": round(calmar, 3),
         "annual_volatility": _pct(vol),

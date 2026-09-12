@@ -22,7 +22,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(prog="mini-quant", description="简易量化平台")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p_init = sub.add_parser("init-schema", help="初始化 MySQL 库表（幂等：行情日表/分钟表/因子表）")
+    sub.add_parser("init-schema", help="初始化 MySQL 库表（幂等：行情日表/分钟表/因子表）")
 
     p_in = sub.add_parser("ingest", help="Baostock 行情增量入库")
     p_in.add_argument("--code", required=True, help="证券代码，如 sh.600000 / sz.000001")
@@ -62,7 +62,7 @@ def main() -> None:
     p_sv.add_argument("--host", default="127.0.0.1")
     p_sv.add_argument("--port", type=int, default=8000)
 
-    p_rp = sub.add_parser("repair-dt", help="修复分钟表历史脏时间戳（17位数字串→标准格式，幂等）")
+    sub.add_parser("repair-dt", help="修复分钟表历史脏时间戳（17位数字串→标准格式，幂等）")
 
     args = parser.parse_args()
 

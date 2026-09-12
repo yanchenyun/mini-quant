@@ -18,7 +18,8 @@ class FactorEngine:
     输出：[code, dt, <因子列...>]，行序与输入对齐（按 code+dt 合并回行情）。
     """
 
-    def compute(self, bars: pd.DataFrame, names: list[str]) -> pd.DataFrame:
+    @staticmethod
+    def compute(bars: pd.DataFrame, names: list[str]) -> pd.DataFrame:
         """计算指定因子，返回因子宽表。
 
         Args:

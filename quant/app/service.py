@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
-from typing import Any
 
 import pandas as pd
 
@@ -46,7 +45,7 @@ def ingest_bars(code: str, start: str, end: str | None = None,
         first_start = max(first_start, latest_day)
 
     if first_start > end:
-        print(f"[{code}/{freq}] 数据已是最新（截至 {latest}），无需更新")
+        print(f"[{code}/{freq}] 数据已是最新（截至 {first_start}），无需更新")
         return 0
 
     df = src.fetch_bars(code, first_start, end, freq=freq, adjust=adjust)
@@ -97,7 +96,7 @@ def run_backtest(code: str, start: str, end: str | None = None,
 
     factor_frame = None
     if names:
-        factor_frame = FactorEngine().compute(bars, names)
+        factor_frame = FactorEngine.compute(bars, names)
     if load_start < start:
         # 裁剪回测区间：预热行情只参与因子计算，不进入回测主循环
         bars = bars[bars["trade_date"] >= start]
@@ -135,7 +134,7 @@ def compute_factors(code: str, start: str, end: str | None = None,
     if bars.empty:
         raise RuntimeError(f"无数据：{code} {start}~{end}（请先执行 ingest）")
 
-    frame = FactorEngine().compute(bars, names)
+    frame = FactorEngine.compute(bars, names)
     n = repo.save_factors(frame, freq)
     for c in names:
         valid = int(frame[c].notna().sum())

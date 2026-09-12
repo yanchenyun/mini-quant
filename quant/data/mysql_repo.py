@@ -299,7 +299,8 @@ class MySQLBarRepo:
         with self._conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(sql, (code, int(adjust)))
-                (val,) = cur.fetchone()
+                row = cur.fetchone()
+        val = row[0] if row is not None else None
         return norm_dt(val) if val is not None else None
 
     def repair_date_time(self) -> int:

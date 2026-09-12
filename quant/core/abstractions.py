@@ -17,7 +17,7 @@ from .models import Bar, Fill, Order, Position, Side
 
 # ── 数据面 ────────────────────────────────────────────────────────────────
 class MarketDataSource(Protocol):
-    """外部行情数据源：Baostock / Tushare / AKShare……各写一个实现。"""
+    """外部行情数据源：Baostock / Tushare / AKShare……。"""
     name: str
 
     def fetch_bars(self, code: str, start: str, end: str,
@@ -26,7 +26,8 @@ class MarketDataSource(Protocol):
 
         Args:
             code: 证券代码（如 sh.600000）。
-            start / end: 日期范围 'YYYY-MM-DD'。
+            start: 起始日期 'YYYY-MM-DD'。
+            end: 结束日期 'YYYY-MM-DD'。
             freq: '1d' | '5min'（可扩展 15/30/60min）。
             adjust: 复权标记，1=后复权 2=前复权 3=不复权。
 
@@ -58,7 +59,8 @@ class OrderSink(Protocol):
 
 class PortfolioView(Protocol):
     """策略与风控可见的账户只读视图。"""
-    cash: float
+    @property
+    def cash(self) -> float: ...
 
     def position(self, code: str) -> Position | None: ...
     def equity(self, prices: dict[str, float]) -> float: ...
