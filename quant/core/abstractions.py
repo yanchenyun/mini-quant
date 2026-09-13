@@ -1,9 +1,7 @@
 """全系统扩展点的抽象接口契约（Protocol / ABC）。
 
-SOLID 落地：
-- ISP + DIP：Strategy 只依赖 StrategyContext 窄接口，不感知数据源 / 引擎细节；
-- LSP：SimBroker / 未来 QmtBroker 实现同一 Broker 协议，引擎零改动；
-- OCP：新数据源 / 券商 / 风控 / 因子 = 新增实现类 + 注册，改 0 行旧代码。
+核心原则：策略只依赖 StrategyContext 窄接口（ISP），
+新数据源 / 券商 / 风控 / 因子 = 新增实现类，改 0 行旧代码（OCP）。
 """
 from __future__ import annotations
 
@@ -162,12 +160,21 @@ class Strategy(ABC):
     def on_init(self, ctx: StrategyContext) -> None: ...
 
     @abstractmethod
-    def on_bar(self, ctx: StrategyContext, bar: Bar) -> None: ...
+    def on_bar(self, ctx: StrategyContext, bar: Bar) -> None:
+        """每根 bar 回调：策略在此产生信号并通过 ctx.buy()/sell() 下单。
+
+        bar 是当前正在处理的行情 bar（日线=当日，分钟=当根 5min）。
+        策略通过 ctx.history 获取截至当前 bar（含）的收盘价序列，
+        通过 ctx.price 获取当前 bar 收盘价，通过 ctx.factor() 读取因子值。
+
+        信号产生的订单会在次一 bar 开盘时撮合成交（防未来函数）。
+        """
+        ...
 
     def on_new_day(self, ctx: StrategyContext, bar: Bar) -> None:
         """交易日开始钩子（可选重写，默认空实现——向后兼容）。
 
-        引擎在每个交易日的第一根 bar 撮合结算后、首个 on_bar 之前调用
+        引擎在每个交易日的撮合结算后、首个 on_bar 之前调用
         （bar 为当日第一根，用于确定标的与上下文）。日内策略在此重置
         当日状态（如日内开仓次数、日内均线累计）。
         """

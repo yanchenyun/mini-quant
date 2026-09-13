@@ -1,5 +1,6 @@
-"""Web 控制台（FastAPI）：K线 + 双均线 + 买卖点 + 净值曲线 + 绩效指标。
+"""Web 控制台（FastAPI）：K线 + 均线 + 买卖点 + 净值曲线 + 绩效指标。
 
+支持日线/5分钟、双均线/动量因子策略切换。
 webapp 只调用 app.service，不直接触碰数据层 / 引擎 —— 依赖方向不倒置。
 """
 from __future__ import annotations
@@ -67,17 +68,17 @@ def backtest(code: str, start: str, end: str,
     bars = bars.sort_values(x_key)
     close = bars["close"].astype(float)
 
-    # 基准：期初全仓买入持有。净值曲线 x 轴为交易日（分钟频率每天 48 根
-    # bar），故基准须按交易日取"每日最后一根 bar 收盘"重采样对齐，
-    # 否则序列长度与 x 轴不匹配导致图表错位。
-    daily_close = (bars.groupby("trade_date")["close"].last().astype(float)
-                   if "trade_date" in bars.columns else close)
-    first = float(daily_close.iloc[0])
+    # 基准：期初全仓买入持有。按 bar 粒度计算，确保与 K 线 x 轴等长
+    # （分钟频率下每天 48 根 bar，基准也有 48 个点，图表自动对齐）。
+    first = float(close.iloc[0])
     benchmark = [round(float(v) / first * result.metrics["init_cash"], 2)
-                 for v in daily_close]
+                 for v in close]
 
-    ma_fast = _round_list(close.rolling(fast).mean())
-    ma_slow = _round_list(close.rolling(slow).mean())
+    if strategy == "double_ma":
+        ma_fast = _round_list(close.rolling(fast).mean())
+        ma_slow = _round_list(close.rolling(slow).mean())
+    else:
+        ma_fast, ma_slow = [], []
 
     buys = [[t["date"], t["price"], t["quantity"], t["commission"]] for t in result.trades
             if t["side"] == "buy"]

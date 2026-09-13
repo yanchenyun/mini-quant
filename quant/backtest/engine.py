@@ -1,20 +1,15 @@
 """事件驱动回测引擎：数据逐 bar 推进，订单次一 bar 开盘成交。
 
-同一套引擎 + SimBroker 即回测；将来换 LiveFeed + QmtBroker 即实盘
-（主循环不改）—— 这是本架构最重要的设计决策（LSP）。
-
-v0.2 频率无关改造（日线/5 分钟共用本引擎）：
-- 主循环按 trade_date 分组（而非 dt），保证 T+1 解禁、日始钩子、日终快照
-  的“日”语义在分钟频率下依然正确——这正是 Bar.dt / Bar.trade_date
-  双字段解耦的意义；
-- 净值快照按交易日收盘口径记录，绩效年化仍以 252 个交易日为基准；
-- 策略可见的 history 索引为 bar.dt，指标计算（rolling 等）与频率无关。
+同一套引擎 + SimBroker 即回测，将来换 LiveFeed + QmtBroker 即实盘（LSP）。
+主循环按 trade_date 分组，保证 T+1 / 日始钩子的“日”语义在分钟频率下依然正确。
+策略可见的 history 索引为 bar.dt，指标计算与频率无关。
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from ..core.abstractions import (FactorAccessor, PortfolioView, RiskRule,
@@ -59,7 +54,7 @@ class BacktestEngine:
         self.init_cash = init_cash
         self.cost = cost or CostModel()
         self.broker = SimBroker(self.cost)
-        self.risk = RiskChain(risk_rules)
+        self.risk = RiskChain(risk_rules, cost=self.cost)
         # 净值按交易日快照，故年化基准默认 252；如改按 bar 快照可传
         # periods_per_year=252*48（5分钟）等
         self.periods_per_year = periods_per_year
@@ -67,10 +62,12 @@ class BacktestEngine:
         self.portfolio = Portfolio(init_cash=init_cash)
         self.bars = self._normalize(bars)
         self._factor_dfs = self._attach_factors(factor_frame)
-        self._history: dict[str, list[tuple[str, float]]] = {}  # code → [(dt, close), ...]
+        # 预构建每标的收盘价/时间戳数组（消除主循环中逐 bar 构造 pd.Series 的 O(n²) 开销）
+        self._full_prices: dict[str, np.ndarray] = {}
+        self._full_dts: dict[str, np.ndarray] = {}
+        self._history: dict[str, tuple[np.ndarray, np.ndarray, int]] = {}  # code → (prices, dts, count)
         self._prices: dict[str, float] = {}        # code → 最新收盘价（用于净值计算）
         self._today_bar: dict[str, Bar] = {}       # code → 当日最新 bar（风控/撮合用）
-        self._seen: dict[str, int] = {}            # code → 已推进 bar 数（因子切片用）
         self._view = self._PortfolioViewImpl(self.portfolio)
 
     # 引擎自身作为 OrderSink（策略只认识 OrderSink 协议，不认识引擎）
@@ -131,49 +128,71 @@ class BacktestEngine:
     # ── 主循环：按交易日分组驱动日界，一天内按 dt 逐 bar 推进 ────────
     def run(self) -> BacktestResult:
         self._today_bar = {}
-        self._seen = {}
-        self._history = {}
+        # 预构建每标的完整价格/时间数组（O(N) 一次性，N = 该标的总 bar 数）
+        self._full_prices, self._full_dts = {}, {}
+        for code, sub in self.bars.groupby("code", sort=False):
+            arr = sub[["close", "dt"]].to_numpy()
+            self._full_prices[code] = arr[:, 0].astype(float)
+            self._full_dts[code] = arr[:, 1].astype(str)
+        self._history = {}  # code → (prices, dts, count)
+
         self.strategy.on_init(StrategyContext(
             pd.Series(dtype=float), "", self._view, self, 0.0))
 
         for _td, day_df in self.bars.groupby("trade_date", sort=True):
-            # _normalize 已保证 trade_date 列为 str，str() 对任意类型均有定义
+            # _normalize 已保证 trade_date 列为 str；str() 是防御性转换，兼容异构输入
             trade_date: str = str(_td)
             self.portfolio.on_new_day()            # T+1 解禁（每个交易日仅一次）
-            first_bar_of_day = True
-
+            self.risk.reset_pending()              # 清空昨日委托追踪，防止跨日累积
+            day_started: set[str] = set()          # 按 code 独立追踪 on_new_day 触发状态
+        
             for row in day_df.itertuples(index=False):
                 bar = self._to_bar(row, trade_date)
                 self._today_bar[bar.code] = bar
-
+        
                 # ① 撮合此前提交的订单（本 bar 开盘价 ± 滑点）
                 for fill in self.broker.settle(bar):
-                    self.portfolio.apply_fill(fill)
-
-                # ② 累计历史（list append O(1)，仅构造 ctx 时转 Series）
-                self._history.setdefault(bar.code, []).append((bar.dt, bar.close))
+                    if not self.portfolio.apply_fill(fill):
+                        # 现金不足导致成交被跳过——记入拒单日志，避免静默丢失
+                        self.risk.rejects.append({
+                            "date": bar.trade_date, "code": fill.order.code,
+                            "side": fill.order.side.value,
+                            "reason": "现金不足（撮合时实际花费超过可用现金）",
+                        })
+        
+                # ② 累计历史（numpy 数组 append O(1) 摊销，仅构造 ctx 时切片引用）
+                if bar.code not in self._history:
+                    # 首根 bar：预分配完整长度的数组，避免逐 bar 扩容
+                    total = len(self._full_prices[bar.code])
+                    self._history[bar.code] = (
+                        np.empty(total, dtype=float),
+                        np.empty(total, dtype=object),
+                        0,
+                    )
+                prices_arr, dts_arr, cnt = self._history[bar.code]
+                prices_arr[cnt] = bar.close
+                dts_arr[cnt] = bar.dt
+                cnt += 1
+                self._history[bar.code] = (prices_arr, dts_arr, cnt)
                 self._prices[bar.code] = bar.close
-
+        
                 # ③ 因子只读视图：iloc[:n] 切片，结构上排除未来行
-                n = self._seen.get(bar.code, 0) + 1
-                self._seen[bar.code] = n
-                accessor = (FactorAccessor(self._factor_dfs[bar.code].iloc[:n])
+                accessor = (FactorAccessor(self._factor_dfs[bar.code].iloc[:cnt])
                             if bar.code in self._factor_dfs else None)
-
-                hist_pairs = self._history[bar.code]
+        
+                # 从预分配数组切片构造 Series（零拷贝，O(1) 指针操作）
                 hist_series = pd.Series(
-                    [p[1] for p in hist_pairs],
-                    index=[p[0] for p in hist_pairs],
-                )
+                    prices_arr[:cnt], index=dts_arr[:cnt])
                 ctx = StrategyContext(
                     hist_series, bar.dt, self._view, self,
                     bar.close, factors=accessor)
-
-                # ④ 日始钩子：仅当日第一根 bar 触发（撮合后、on_bar 前）
-                if first_bar_of_day:
+        
+                # ④ 日始钩子：每标的当日首根 bar 触发（撮合后、on_bar 前），
+                #    多标的时各 code 独立触发，避免只给第一只股票发 on_new_day
+                if bar.code not in day_started:
                     self.strategy.on_new_day(ctx, bar)
-                    first_bar_of_day = False
-
+                    day_started.add(bar.code)
+        
                 # ⑤ 策略逻辑（信号产生订单，提交到次一 bar 撮合）
                 self.strategy.on_bar(ctx, bar)
 
@@ -195,7 +214,7 @@ class BacktestEngine:
     def _to_bar(row, trade_date: str) -> Bar:
         """将 DataFrame 行转换为 Bar 值对象（处理 None / 类型转换）。"""
         raw_ts: int | None = getattr(row, "trade_status", None)
-        ts: int = 1 if raw_ts is None else int(raw_ts)   # 注意 0（停牌）是有效值，不可用 or 兆底
+        ts: int = 1 if raw_ts is None else int(raw_ts)   # 注意 0（停牌）是有效值，不可用 or 兜底
         return Bar(
             code=row.code, dt=str(row.dt), trade_date=str(trade_date),
             open=float(row.open), high=float(row.high),

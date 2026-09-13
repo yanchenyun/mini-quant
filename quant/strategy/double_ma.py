@@ -33,8 +33,12 @@ class DoubleMAStrategy(Strategy):
         pos = ctx.portfolio.position(bar.code)
         held = pos is not None and pos.quantity > 0
 
-        golden = f1 <= s1 and f0 > s0        # 金叉
-        death = f1 >= s1 and f0 < s0          # 死叉
+        # 容差交叉检测：避免浮点精度问题导致信号丢失
+        # 当两均线差值在容差范围内时视为“无交叉”，防止 f1≈s1 时
+        # f1<=s1 与 f1>=s1 同时为 True 但 f0>s0 与 f0<s0 同时为 False
+        eps = 1e-8
+        golden = (f1 - s1 < eps) and (f0 - s0 > eps)   # 快线从下方穿越慢线
+        death  = (s1 - f1 < eps) and (s0 - f0 > eps)   # 快线从上方穿越慢线
 
         if golden and not held:
             ctx.buy(bar.code, self.buy_ratio)

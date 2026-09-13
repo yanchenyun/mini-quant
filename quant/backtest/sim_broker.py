@@ -1,10 +1,8 @@
 """SimBroker：模拟撮合（Broker 实现），内置 A 股交易规则。
 
-规则：
-- 订单在提交的次一 bar 以开盘价撮合（避免"当日信号当日成交"的未来函数）；
-- 市价单按次日开盘价 + 滑点成交；限价单以 bar 内价格区间判断是否触及限价（开盘跳空但盘中回到限价仍可成交）；
-- 涨停拒买、跌停拒卖（按昨收 ± price_limit 近似）；
-- 佣金双边、印花税仅卖出；不足最小佣金的按最低佣金收。
+订单在次一 bar 以开盘价撮合（避免未来函数）；市价单按开盘价 ± 滑点，
+限价单在 bar 内触及限价时成交（开盘跳空但盘中回到限价仍可成交）。
+涨停一字板拒买、跌停一字板拒卖；佣金双边、印花税仅卖出。
 """
 from __future__ import annotations
 
@@ -66,7 +64,7 @@ class SimBroker:
 
     def _try_fill(self, order: Order, bar: Bar) -> Fill | None | object:
         if not bar.tradable:
-            return None
+            return _SKIP   # 停牌/ST：保留订单，复牌后继续撮合（而非丢弃）
         # 涨跌停：只有一字板才拒买/拒卖（全天封死，无成交机会）。
         # 开盘触板但盘中打开（非一字板）时，交由后续限价单逻辑处理。
         if bar.pre_close > 0:
@@ -102,7 +100,7 @@ class SimBroker:
                 lower = bar.pre_close * (1 - self.cost.price_limit)
                 base = max(base, lower)
             if order.price:
-                # 限价单：开盘跳空低于限价但盘中反弹触及 → 以限价成交
+                # 限价单：开盘跳空低于限价但盘中回升触及 → 以限价成交
                 price = order.price if bar.open < order.price else max(order.price, base)
             else:
                 price = base

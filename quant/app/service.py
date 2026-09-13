@@ -22,8 +22,9 @@ def get_repo(settings: Settings | None = None) -> MySQLBarRepo:
 
 
 def get_source(name: str = "baostock"):
-    """按名称获取数据源实例（工厂方法）。
+    """按名称获取数据源类（工厂方法）。
 
+    返回数据源类（非实例），因其所有方法均为 @staticmethod。
     可选：'baostock'（默认）、'akshare'。
     """
     sources = {
@@ -32,7 +33,7 @@ def get_source(name: str = "baostock"):
     }
     if name not in sources:
         raise ValueError(f"未知数据源: {name}（可选: {list(sources)}）")
-    return sources[name]()
+    return sources[name]
 
 
 def ingest_bars(code: str, start: str, end: str | None = None,

@@ -119,18 +119,26 @@ class AkshareSource:
 
         # dt 已是 'YYYY-MM-DD' 格式字符串
         df["trade_date"] = df["dt"]
-
-        # pre_close：用 shift(1) 从 close 计算（复权后可能不精确，但可用）
-        df["pre_close"] = df["close"].shift(1).fillna(0.0)
+        df["date"] = df["trade_date"]   # 向后兼容别名（与 BaostockSource 输出口径一致）
+        # pre_close：利用 pct_chg 反推真实昨收（pct_chg 基于未复权价格计算，
+        # 不受除权除息调整影响）。公式：pre_close = close / (1 + pct_chg/100)。
+        # 比 shift(1) 更准确——前复权 close 的 shift(1) 在除权日不等真实昨收。
+        df["pct_chg"] = pd.to_numeric(df["pct_chg"], errors="coerce").fillna(0.0)
+        df["pre_close"] = df.apply(
+            lambda r: r["close"] / (1 + r["pct_chg"] / 100)
+            if r["pct_chg"] != 0 else r["close"],
+            axis=1,
+        )
+        df["pre_close"] = df["pre_close"].fillna(0.0)
 
         # trade_status / is_st：AKShare 日线不直接提供
         # 安全默认：可交易、非 ST（与 Baostock 分钟线处理一致）
         df["trade_status"] = 1
         df["is_st"] = 0
 
-        # 数值列转换
+        # 数值列转换（pct_chg 已在 pre_close 计算前转换）
         num_cols = ["open", "high", "low", "close", "pre_close",
-                    "volume", "amount", "pct_chg", "turn"]
+                    "volume", "amount", "turn"]
         for col in num_cols:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
@@ -189,7 +197,7 @@ class AkshareSource:
         # 时间戳归一（AKShare 分钟时间通常为 'YYYY-MM-DD HH:MM:SS'）
         df["dt"] = df["dt"].map(norm_dt)
         df["trade_date"] = df["dt"].str[:10]
-
+        df["date"] = df["trade_date"]   # 向后兼容别名（与 BaostockSource 输出口径一致）
         # pre_close：分钟线不提供，由仓储层 LEFT JOIN 日线表回填
         df["pre_close"] = 0.0
         # trade_status / is_st：同上，安全默认

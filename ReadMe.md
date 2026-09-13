@@ -17,7 +17,7 @@ python -m venv .venv && .venv\Scripts\activate     # Windows
 pip install -r requirements.txt                    # pandas / baostock / akshare / PyMySQL / FastAPI / uvicorn
 ```
 
-依赖：Python 3.13 · MySQL 8（本机或局域网均可）。
+依赖：Python 3.12 · MySQL 8（本机或局域网均可）。
 
 **配置**：复制模板 `config/settings.example.yaml` → `config/settings.yaml`，填入 MySQL 连接与回测成本参数（也可不建文件，直接设 `QUANT_DB_*` 环境变量覆盖）。
 > ⚠️ `settings.yaml` 含密码，已被 `.gitignore` 排除，**不要提交入库**；新环境一律从模板复制。
@@ -223,7 +223,7 @@ A 股交易规则内置清单（回测可信的根基）：
 | 佣金 万2.5（最低 5 元） | `CostModel.commission` |
 | 印花税（仅卖出）万5 | 同上 |
 | 滑点 0.2%（千2） | `SimBroker._try_fill` |
-| 涨停拒买 / 跌停拒卖 | `SimBroker._try_fill`（基准 = 日线昨收，±9.5% 近似） |
+| 涨停一字板拒买 / 跌停一字板拒卖 | `SimBroker._try_fill`（基准 = 日线昨收，±9.5% 近似；仅一字板拒单，非一字板交由限价单逻辑处理） |
 | 停牌 / ST 拒单 | `TradabilityRule` + 分钟表 LEFT JOIN 日线回填状态 |
 | 信号次一 bar 开盘价成交 | `SimBroker.settle`（防未来函数） |
 
@@ -231,7 +231,7 @@ A 股交易规则内置清单（回测可信的根基）：
 
 | 维度 | 选型 | 理由 |
 |---|---|---|
-| 语言 | Python 3.13 | 量化生态无可替代；策略研究表达力强 |
+| 语言 | Python 3.12 | 量化生态无可替代；策略研究表达力强 |
 | 数据处理 | pandas | DataFrame 贯穿全链路，与因子计算天然契合 |
 | 数据源 | Baostock（免费）+ AKShare（免费） | 双源互备，`--source` 一键切换；适配器模式可再加 Tushare |
 | 存储 | MySQL 8（PyMySQL） | 用户既有环境；仓储接口隔离，换 Parquet+DuckDB 只动 data 层 |
@@ -326,7 +326,7 @@ cli.py main() 解析参数
                    ① SimBroker.settle(bar)          # 上一根的挂单，本 bar 开盘价±滑点成交
                    │    └→ Portfolio.apply_fill(fill)   # 更新现金/持仓/盈亏
                    ② 追加 history + FactorAccessor(iloc[:n] 切片) 构造 StrategyContext
-                   ③ 首根 bar 时触发 strategy.on_new_day()（日始钩子）
+                   ③ 首根 bar 时触发 strategy.on_new_day()（撮合后、信号前的日始钩子）
                    ④ strategy.on_bar(ctx, bar)      # 策略信号
                         └→ ctx.buy()/sell() → 引擎.submit(order)
                              → RiskChain.check（停牌ST→手数→现金→T+1，四道风控）

@@ -34,14 +34,26 @@ class Portfolio:
         for pos in self.positions.values():
             pos.on_new_day()
 
-    def apply_fill(self, fill: Fill) -> None:
-        """按成交更新现金与持仓。卖出时结算本轮盈亏。"""
+    def apply_fill(self, fill: Fill) -> bool:
+        """按成交更新现金与持仓。卖出时结算本轮盈亏。
+
+        买入时检查现金足额：若现金不足则跳过该笔成交（防止现金变负）。
+        这是风控与撮合口径不一致时的最后防线（风控用当前 bar open 估算，
+        撮合用次 bar open 实际成交，跳空高开时实际花费可能超过估算）。
+
+        Returns:
+            True 表示成交已记账；False 表示现金不足被跳过（调用方应记拒单日志）。
+        """
         o = fill.order
         gross = fill.filled_price * fill.filled_qty
         pos = self.positions.setdefault(o.code, Position(code=o.code))
 
         if o.side == Side.BUY:
-            self.cash -= gross + fill.commission
+            # 现金足额校验：防止风控漏判导致现金变负
+            cost_needed = gross + fill.commission
+            if cost_needed > self.cash:
+                return False  # 现金不足，跳过该笔成交
+            self.cash -= cost_needed
             # avg_cost 须含买入佣金摊薄（on_buy 契约：price_incl_cost 为含佣单价），
             # 否则卖出利润公式 (sell_price - avg_cost)*qty - sell_commission
             # 会重复扣减买入侧费用（avg_cost 偏低 → 利润偏低）。
@@ -61,6 +73,7 @@ class Portfolio:
             price=fill.filled_price, quantity=fill.filled_qty,
             commission=round(fill.commission, 2), profit=profit,
         ))
+        return True
 
     def snapshot(self, date: str, prices: dict[str, float]) -> None:
         mv = sum(

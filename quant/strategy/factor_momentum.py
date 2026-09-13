@@ -2,7 +2,13 @@
 
 与 DoubleMAStrategy 的本质区别：on_bar 不再手写 rolling 指标，
 而是声明 required_factors（服务层自动解析依赖、预热计算并注入），
-策略只关心信号语义——"动量为正持有，为负清仓"。
+策略只关心信号语义。
+
+信号逻辑：
+- 动量值 > threshold 且未持仓 → 买入
+- 动量值 < -threshold 且持仓 → 卖出
+- threshold=0 时：动量为正买入，为负卖出，无死区
+- threshold>0 时：[-threshold, threshold] 为持仓不变死区
 
 因子值在回测起点前已由预热窗口（lookback）算好，第一天即有效。
 """

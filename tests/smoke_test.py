@@ -39,13 +39,14 @@ def make_bars(code: str = "sh.600000", days: int = 400,
     high = np.maximum(open_, close) * (1 + np.abs(rng.normal(0, 0.004, days)))
     low = np.minimum(open_, close) * (1 - np.abs(rng.normal(0, 0.004, days)))
     dates = pd.bdate_range("2023-01-02", periods=days).strftime("%Y-%m-%d")
-    return pd.DataFrame({
+    df = pd.DataFrame({
         "code": code, "date": dates, "dt": dates, "trade_date": dates,
         "open": open_, "high": high, "low": low,
-        "close": close, "pre_close": np.roll(close, 1),
-        "volume": rng.integers(1e6, 5e6, days), "amount": close * 3e6,
-        "trade_status": 1, "is_st": 0,
-    }).iloc[1:].reset_index(drop=True)
+        "close": close, "volume": rng.integers(1e6, 5e6, days),
+        "amount": close * 3e6, "trade_status": 1, "is_st": 0,
+    })
+    df["pre_close"] = df["close"].shift(1).fillna(0.0)
+    return df.iloc[1:].reset_index(drop=True)
 
 
 def make_minute_bars(code: str = "sh.600000", days: int = 40,

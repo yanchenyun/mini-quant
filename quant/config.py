@@ -1,4 +1,4 @@
-"""配置加载：yaml 默认值 + 环境变量覆盖（DIP 之外唯一的“全局”，仅被工厂函数使用）。"""
+"""配置加载：yaml 默认值 + 环境变量覆盖（系统唯一的全局配置入口，仅被工厂函数使用）。"""
 from __future__ import annotations
 
 import os
@@ -41,6 +41,7 @@ class Settings:
     db: DBSettings = field(default_factory=DBSettings)
     backtest: BacktestSettings = field(default_factory=BacktestSettings)
     server: ServerSettings = field(default_factory=ServerSettings)
+    data_source: str = "baostock"
 
 
 def load_settings() -> Settings:
@@ -60,5 +61,6 @@ def load_settings() -> Settings:
         ),
         backtest=BacktestSettings(**{**BacktestSettings().__dict__, **bt}),
         server=ServerSettings(**{**ServerSettings().__dict__, **sv}),
+        data_source=raw.get("data_source", "baostock"),
     )
     return settings

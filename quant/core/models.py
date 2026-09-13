@@ -95,11 +95,17 @@ class Position:
         注意：买入只增加 quantity，不增加 available——当日买入的仓位
         须等到次日 on_new_day() 才解禁，以此实现 T+1 约束。
 
+        avg_cost 含买入佣金摊薄（price_incl_cost = filled_price + commission/qty），
+        这保证卖出利润公式 (sell_price - avg_cost)*qty - sell_commission
+        不会重复扣减买入侧费用。若遗漏佣金摊薄，avg_cost 偏低，利润会被低估。
+
         Args:
-            qty: 本次买入股数。
+            qty: 本次买入股数（须 > 0）。
             price_incl_cost: 含佣金的买入单价（用于摊薄成本计算）。
         """
-        # 加权平均：旧持仓总成本 + 新买入总成本 / 合并后总股数
+        if qty <= 0:
+            return
+        # 加权平均：(旧持仓总成本 + 新买入总成本) / 合并后总股数
         self.avg_cost = (self.avg_cost * self.quantity + price_incl_cost * qty) / (self.quantity + qty)
         self.quantity += qty
 
