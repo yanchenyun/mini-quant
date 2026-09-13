@@ -66,7 +66,8 @@ class BacktestEngine:
         self._full_prices: dict[str, np.ndarray] = {}
         self._full_dts: dict[str, np.ndarray] = {}
         self._history: dict[str, tuple[np.ndarray, np.ndarray, int]] = {}  # code → (prices, dts, count)
-        self._prices: dict[str, float] = {}        # code → 最新收盘价（用于净值计算）
+        self._prices: dict[str, float] = {}        # code → 当日最新收盘价（用于净值计算）
+        self._last_close: dict[str, float] = {}    # code → 历史最近 close（停牌日估值兜底，避免用 avg_cost 高估）
         self._today_bar: dict[str, Bar] = {}       # code → 当日最新 bar（风控/撮合用）
         self._view = self._PortfolioViewImpl(self.portfolio)
 
@@ -86,9 +87,22 @@ class BacktestEngine:
             return self._pf.equity(prices)
 
     def submit(self, order: Order) -> None:
-        """订单提交入口（OrderSink 协议实现）：风控检查通过后转发给 Broker。"""
+        """订单提交入口（OrderSink 协议实现）：风控检查通过后转发给 Broker。
+
+        时序保护：bar.code 尚未在 _today_bar 就绪时（例如多标的场景中策略
+        在 on_bar(code_A) 里下单 code_B），不能直接 return——这会无声吞单，
+        让用户在前端 / CLI 看到的"拒单数"为 0而察觉不到。改为记到 rejects，
+        至少让异常暴露出来。
+        """
         bar = self._today_bar.get(order.code)
-        if bar is None or self.risk.check(order, self._view, bar) is not None:
+        if bar is None:
+            self.risk.rejects.append({
+                "date": "", "code": order.code,
+                "side": order.side.value,
+                "reason": "_today_bar 未就绪（多标的/时序异常）",
+            })
+            return
+        if self.risk.check(order, self._view, bar) is not None:
             return
         self.broker.submit(order)
 
@@ -175,6 +189,7 @@ class BacktestEngine:
                 cnt += 1
                 self._history[bar.code] = (prices_arr, dts_arr, cnt)
                 self._prices[bar.code] = bar.close
+                self._last_close[bar.code] = bar.close       # 维护历史最近 close，供停牌日估值
         
                 # ③ 因子只读视图：iloc[:n] 切片，结构上排除未来行
                 accessor = (FactorAccessor(self._factor_dfs[bar.code].iloc[:cnt])
@@ -197,7 +212,7 @@ class BacktestEngine:
                 self.strategy.on_bar(ctx, bar)
 
             # ⑥ 日终快照（收盘口径；净值曲线每个交易日一条）
-            self.portfolio.snapshot(trade_date, self._prices)
+            self.portfolio.snapshot(trade_date, self._prices, self._last_close)
 
         metrics = compute_metrics(self.portfolio.equity_curve,
                                   self.portfolio.trades,

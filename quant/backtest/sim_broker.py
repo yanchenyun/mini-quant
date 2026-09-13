@@ -31,31 +31,46 @@ class CostModel:
 
 
 class SimBroker:
-    """回测撮合。将来的 QmtBroker 实现同一 Broker 接口即可切实盘。"""
+    """回测撮合。将来的 QmtBroker 实现同一 Broker 接口即可切实盘。
+
+    挂单 TTL（order.ttl_bars）：本 bar 尝试撮合未成交时递减，TTL 到期自动撤。
+    默认 ttl_bars=1（A 股当日有效）—— 信号当根的下一根 bar 仍未成交，
+    则按"收市前撤单"语义自动丢弃，规避"信号 t 在 t+30 才成交"的假象。
+    过期的单不入 rejects —— 撤单是预期行为，不是异常。
+    """
 
     def __init__(self, cost: CostModel | None = None):
         self.cost = cost or CostModel()
-        self._pending: list[Order] = []
+        # (order, remaining_bars) 元组列表：Settle 时逐根 bar 倒计时
+        self._pending: list[tuple[Order, int]] = []
 
     def submit(self, order: Order) -> None:
-        self._pending.append(order)
+        self._pending.append((order, order.ttl_bars))
 
     def settle(self, bar: Bar) -> list[Fill]:
-        """以本 bar 开盘价撮合挂起的订单（日线=次一交易日；分钟=次一 bar）。"""
+        """以本 bar 开盘价撮合挂起的订单（日线=次一交易日；分钟=次一 bar）。
+
+        TTL 处理：未成交的挂单 remaining_bars -= 1；<= 0 时到期自动撤（不入 rejects）。
+        """
         if not self._pending:
             return []
 
         fills: list[Fill] = []
-        still_pending: list[Order] = []
-        for order in self._pending:
+        still_pending: list[tuple[Order, int]] = []
+        for order, remaining in self._pending:
             if order.code != bar.code:
-                still_pending.append(order)   # 多标的时留待各自 bar 处理
+                # 多标的时留待各自 bar 处理，TTL 不递减（不归本 bar 计数）
+                still_pending.append((order, remaining))
                 continue
+            if remaining <= 0:
+                # TTL 已耗尽，自动撤单（非异常，不入 rejects）
+                continue
+            new_remaining = remaining - 1
             result = self._try_fill(order, bar)
             if result is None:
                 continue                      # 涨跌停/停牌：放弃该订单
             if result == _SKIP:
-                still_pending.append(order)   # 限价单跳空未成交，保留待下根 bar
+                still_pending.append((order, new_remaining))   # 限价单跳空未成交，递减 TTL 后待下根 bar 再试
                 continue
             assert isinstance(result, Fill)
             fills.append(result)

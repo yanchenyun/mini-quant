@@ -75,9 +75,22 @@ class Portfolio:
         ))
         return True
 
-    def snapshot(self, date: str, prices: dict[str, float]) -> None:
+    def snapshot(self, date: str, prices: dict[str, float],
+                 last_prices: dict[str, float] | None = None) -> None:
+        """记录当日净值快照。
+
+        Args:
+            date: 交易日 'YYYY-MM-DD'。
+            prices: 当日最新价（code → close），用于持仓市值估值。
+            last_prices: 各标的历史最近 close 快照。回测引擎在主循环中
+                维护该映射（持仓标的被停牌当日无 bar 时，self._prices
+                不会有该 code，此时优先用 last_prices，最后才退到 avg_cost——
+                避免"一字跌停日的停牌股估值仍按买入均价"的高估偏差）。
+        """
+        last_prices = last_prices or {}
         mv = sum(
-            pos.quantity * prices.get(pos.code, pos.avg_cost)
+            pos.quantity * prices.get(
+                pos.code, last_prices.get(pos.code, pos.avg_cost))
             for pos in self.positions.values()
         )
         self.equity_curve.append({

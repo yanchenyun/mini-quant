@@ -49,11 +49,16 @@ class Order:
 
     由策略在 T 日 bar 结束时生成，经 Broker 在 T+1 bar 开盘时撮合成交。
     price 为 None 表示市价单（按次 bar 开盘价成交）；非 None 则为限价单。
+
+    ttl_bars：挂单存活窗口（剩余可尝试撮合的 bar 数）。1 = 当日有效（A 股默认
+    —— 当日未成交收市前自动撤）；是回测最常见、最贴近实盘的口径。
+    实际过期由 SimBroker 自动丢弃，不入 rejects —— 过期是预期行为，不是异常。
     """
     code: str                        # 标的代码，如 'sh.600000'
     side: Side                       # 买卖方向：Side.BUY / Side.SELL
     quantity: int                    # 委托数量（股），须为 100 的整数倍
     price: float | None = None       # 委托价格；None = 市价单（次 bar 开盘价成交）
+    ttl_bars: int = 1                # 挂单 TTL：剩余可尝试撮合的 bar 数，默认 1（A 股当日有效）
     created_at: str = ""             # 委托生成时刻（对应触发 bar 的 trade_date）
 
 
