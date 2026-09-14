@@ -162,10 +162,27 @@ class MySQLBarRepo:
     # ── 初始化 ───────────────────────────────────────────
     def init_schema(self) -> None:
         """幂等建库建表（日表 + 分钟表）。"""
+        # 先不指定 database 连接，确保库不存在时也能创建
+        conn_no_db = pymysql.connect(
+            host=self._db.host, port=self._db.port, user=self._db.user,
+            password=self._db.password, charset="utf8mb4", autocommit=True,
+        )
+        try:
+            cur = conn_no_db.cursor()
+            cur.execute(
+                "CREATE DATABASE IF NOT EXISTS `{}` "
+                "DEFAULT CHARACTER SET utf8mb4 DEFAULT COLLATE utf8mb4_unicode_ci".format(
+                    self._db.name)
+            )
+            cur.close()
+        finally:
+            conn_no_db.close()
+
         with self._conn() as conn:
             cur = conn.cursor()
             for stmt in DDL.strip().split(";"):
-                if stmt.strip():
+                stmt = stmt.strip()
+                if stmt and not stmt.upper().startswith("CREATE DATABASE"):
                     cur.execute(stmt)
 
     # ── 写 ───────────────────────────────────────────────
