@@ -10,8 +10,10 @@ baostock 分钟线实际返回 17 位纯数字串 'YYYYMMDDHHMMSSmmm'（含 3 �
 from __future__ import annotations
 
 
-def norm_dt(s: object) -> str:
+def norm_dt(s: str | None) -> str:
     """把任意已知形态的时间字符串归一为 'YYYY-MM-DD HH:MM:SS'；无法识别则原样返回。"""
+    if s is None:
+        return ""
     s = str(s).strip()
     if s.isdigit():
         if len(s) == 17:   # YYYYMMDDHHMMSSmmm（baostock 分钟线，含毫秒）
