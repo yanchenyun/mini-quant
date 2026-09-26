@@ -3,14 +3,14 @@
 WindPy 是万得金融终端配套的 Python 接口，数据质量与覆盖度优于免费源，
 但它有三个"脏差异"，正是本适配器要吸收的部分：
 
-1. **运行前置条件**：必须先安装并登录 Wind 金融终端。WindPy 随终端分发
+1. 运行前置条件：必须先安装并登录 Wind 金融终端。WindPy 随终端分发
    （典型路径 ``C:\\Program Files (x86)\\Wind\\Wind.NET.Client\\WindNET\\x64``），
-   **不能通过 pip 安装**。因此本模块对 WindPy 一律**延迟导入**——没装终端的
+   不能通过 pip 安装。因此本模块对 WindPy 一律延迟导入——没装终端的
    机器照样能 import 本文件（只是调用 ``fetch_bars`` 时才抛 ImportError）。
-2. **代码格式**：Wind 用 ``600519.SH``（数字.大写交易所后缀），本系统用
+2. 代码格式：Wind 用 ``600519.SH``（数字.大写交易所后缀），本系统用
    ``sh.600519``（小写交易所前缀.数字），需要双向转换。
-3. **返回结构**：``WindData`` 把结果按"字段"分组存放——单标的查询时
-   ``.Data[i]`` 是第 i 个字段的**时间序列**（不是行记录）；时间以
+3. 返回结构：``WindData`` 把结果按"字段"分组存放——单标的查询时
+   ``.Data[i]`` 是第 i 个字段的时间序列（不是行记录）；时间以
    ``datetime.date`` / ``datetime.datetime`` 对象给出（不是字符串），
    需要自行组装成 DataFrame。
 
@@ -26,11 +26,11 @@ WindPy 是万得金融终端配套的 Python 接口，数据质量与覆盖度�
               pre_close/volume/amount/trade_status/is_st
 ============  ==========================================  ==================
 
-**分钟线的 pre_close / trade_status / is_st**：Wind 分钟序列不提供，
+分钟线的 pre_close / trade_status / is_st：Wind 分钟序列不提供，
 按既有约定给安全默认（可交易、非 ST、昨收 0），由仓储层 LEFT JOIN 日线表
 回填真实昨收——与 BaostockSource / AkshareSource 处理完全一致。
 
-**字段降级**：Wind 可请求的字段集合随终端版本与账号权限变化（例如指数没有
+字段降级：Wind 可请求的字段集合随终端版本与账号权限变化（例如指数没有
 换手率 ``turn``）。因此把日线字段分成"全量"与"核心"两组：全量请求失败时
 自动降级到核心字段重试，保证"宁可少几个附加字段，也不能拉不到行情"。
 """
@@ -137,7 +137,7 @@ def _wind_session(wait_time: int = 120):
     幂等：已连接时直接复用（``w.start()`` 本身也不重复启动，但显式判断可
     避免无谓的 120s 等待）。线程安全：用模块锁包住首次启动。
 
-    刻意**不在此处 stop**——WindPy 在进程退出时自动 stop，反复 start/stop
+    刻意不在此处 stop——WindPy 在进程退出时自动 stop，反复 start/stop
     只会拖慢多标的批量抓取。
 
     Args:
@@ -187,7 +187,7 @@ def _winddata_to_frame(out, code: str) -> pd.DataFrame:
     时间序列），故这里按 ``.Fields`` 的顺序逐列取回；长度不齐时按 ``.Times``
     对齐截断/补齐，避免 DataFrame 构造失败。
 
-    ⚠️ **字段名大小写**：Wind 返回的 ``.Fields`` 是**大写**（请求 ``'open'``
+    注意字段名大小写：Wind 返回的 ``.Fields`` 是大写（请求 ``'open'``
     实际回 ``'OPEN'``，``'trade_status'`` 回 ``'TRADE_STATUS'``）。若直接拿它
     当列名，后续按小写字段名取值会全部落空——这里统一 ``lower()`` 归一，
     是小写口径与 Wind 大写口径之间的关键接缝。
@@ -228,7 +228,7 @@ def _finalize(df: pd.DataFrame, code: str, freq: str, adjust: str,
         # Wind 分钟序列不含昨收；由仓储层 JOIN 日线表回填
         df["pre_close"] = 0.0
 
-    # trade_status：Wind 返回的是**中文描述**（'交易' / '停牌'，经实测确认），
+    # trade_status：Wind 返回的是中文描述（'交易' / '停牌'，经实测确认），
     # 不是数字！本系统口径为 1=可交易 / 0=不可交易，故按"是否含停牌"归一。
     # 采用 fail-open 判据：不含"停牌"（含未知值、空值）一律视为可交易——
     # 万一 Wind 调整该字段的取值文案，宁可少标记一天停牌，也不能把整个回测

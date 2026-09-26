@@ -153,8 +153,8 @@ class Strategy(ABC):
     """
     params: dict = {}
     required_factors: list[str] = []
-    # ⚠️ 子类须在 __init__ 中重新赋值 params / required_factors，
-    #    否则所有实例共享同一可变对象（Python 类属性陷阱）。
+    # 注意：子类须在 __init__ 中重新赋值 params / required_factors，
+    # 否则所有实例共享同一可变对象（Python 类属性陷阱）。
 
     @abstractmethod
     def on_init(self, ctx: StrategyContext) -> None: ...

@@ -23,14 +23,12 @@
 
 A 股规则实现位置速查
 --------------------
-| 规则 | 实现位置 |
-|---|---|
-| T+1 | ``core.Position.available`` + ``engine.run`` 日界 |
-| 100 股整手 | ``core.StrategyContext.buy/sell`` + ``risk.LotSizeRule`` |
-| 佣金 / 印花税 / 滑点 | ``sim_broker.CostModel`` |
-| 涨跌停一字板拒单 | ``sim_broker.SimBroker._try_fill`` |
-| 停牌 / ST | ``risk.TradabilityRule`` |
-| 信号次 bar 撮合 | ``sim_broker.SimBroker.settle`` |
+- T+1：``core.Position.available`` + ``engine.run`` 日界
+- 100 股整手：``core.StrategyContext.buy/sell`` + ``risk.LotSizeRule``
+- 佣金 / 印花税 / 滑点：``sim_broker.CostModel``
+- 涨跌停一字板拒单：``sim_broker.SimBroker._try_fill``
+- 停牌 / ST：``risk.TradabilityRule``
+- 信号次 bar 撮合：``sim_broker.SimBroker.settle``
 
 参见
 ----

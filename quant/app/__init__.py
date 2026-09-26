@@ -2,7 +2,7 @@
 
 依赖注入与装配发生在此层：``service.py`` 负责解析策略的因子依赖、加载预热
 行情、计算因子、构造 BacktestEngine 并执行；CLI 与 Web 都只调 service 的
-公共函数，**不直接触碰 data / backtest**——避免业务逻辑散落两份。
+公共函数，不直接触碰 data / backtest——避免业务逻辑散落两份。
 
 模块划分
 --------

@@ -1,6 +1,6 @@
 """领域层（Domain Layer）—— 全系统的"宪法"。
 
-本包是整个项目的基石，**零第三方依赖**（仅使用标准库 dataclasses / enum / abc / typing），
+本包是整个项目的基石，零第三方依赖（仅使用标准库 dataclasses / enum / abc / typing），
 其它所有层（data / factor / backtest / strategy / app / webapp）都依赖并实现本包定义的
 抽象契约。
 

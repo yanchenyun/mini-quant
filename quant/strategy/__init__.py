@@ -7,7 +7,7 @@
 - ``ctx.portfolio``           账户只读视图（现金 / 持仓 / 净值）
 - ``ctx.buy/sell``            按现金比例买入 / 按持仓比例卖出（T+1 仅 available）
 
-策略**频率无关**——同一份代码在日线 / 5 分钟线上直接可用，rolling 指标
+策略频率无关——同一份代码在日线 / 5 分钟线上直接可用，rolling 指标
 天然按 bar 计算（详见 ``strategy.double_ma.DoubleMAStrategy``）。
 
 当前内置策略

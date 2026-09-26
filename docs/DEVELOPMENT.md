@@ -116,7 +116,8 @@ mini-quant/
 │   ├── baostock_test.py  Baostock 端口连通性脚本（需网络）
 │   └── wind_test.py      Wind 终端登录 + 真实拉取（需 Wind）
 ├── tools/
-│   └── diagnose_network.py  数据源网络自检（DNS/TCP/HTTPS/代理/端到端五层）
+│   ├── diagnose_network.py  数据源网络自检（DNS/TCP/HTTPS/代理/端到端五层）
+│   └── check_style.py       源码注释风格自检（markdown 语法 / emoji）
 ├── ReadMe.md             操作文档（启动 / 运维 / 技术栈）
 └── requirements.txt
 ```
@@ -450,6 +451,65 @@ python -m quant.app.cli serve         # Web 端冒烟
 ```
 
 新增因子 / 策略时在 `tests/smoke_test.py` 加一组合成行情用例（见 §9.2）。
+
+### 8.6 源码注释风格（强制约定）
+
+> 约定**只针对 Python 源码（`.py`）**；`DEVELOPMENT.md` / `ReadMe.md` 等
+> markdown 文档不受此限，照常使用 markdown。
+
+**为什么**：docstring 会被 IDE 悬浮提示、`help()`、Sphinx 等程序消费，而这些
+环境**不渲染 markdown**——`**加粗**` 会原样显示成裸 `**`，`| a | b |` 表格会
+变成一行竖线。所以源码注释统一采用 **PEP 257 摘要行 + RST
+（reStructuredText）**，也就是 Python 官方文档字符串方言。
+
+**怎么写**
+
+| 场景 | 写法 |
+|---|---|
+| 模块 / 类 / 函数说明 | PEP 257 docstring：首行摘要 + 空行 + 详情段落 |
+| 参数 / 返回 / 异常 | Google 风格小节：`Args:` / `Returns:` / `Raises:` |
+| 行内标识符 | RST 双反引号：`` ``sh.600519`` ``、`` ``fetch_bars`` `` |
+| 章节小标题 | RST 标题：文字 + 下一行 `--------` 下划线 |
+| 命令 / 用法示例 | 冒号结尾 + 空行 + 4 空格缩进代码块 |
+
+**四条禁止项**
+
+1. **不加粗**：不写 `**xxx**`。需要强调就直接陈述，或用中文「」。
+2. **不用 markdown 表格**：`| a | b |` 是 markdown 专有语法（RST 无此写法），
+   改用缩进列表 `- 项：说明`，或 RST 简单表格（`====  ====` 分列）。
+3. **不用 markdown 代码块**：三个反引号围栏是 markdown 语法，改用 4 空格
+   缩进代码块。
+4. **不用 emoji**：`⚠️` / `✅` / `❌` 等一律不写进源码。提示用「注意：」，
+   终端输出的状态标记统一用 `✓` / `✗`（普通符号，非 emoji）。
+
+**这些不是 markdown，放心保留**：`--------` 章节下划线（RST 标准）、
+`─` `═` 分隔框线（ASCII art）、`→` 箭头（数学符号）、RST 双反引号。
+
+**自检**（提交前或有疑问时跑一次）
+
+```bash
+python tools/check_style.py     # 全项目扫描，有违规则非零退出
+```
+
+**docstring 模板**
+
+```python
+def fetch_bars(code: str, start: str) -> pd.DataFrame:
+    """拉取行情，返回统一列 DataFrame。
+
+    摘要与详情之间空一行；详情可跨多段，段落之间也空一行。
+
+    Args:
+        code: 本系统证券代码，如 ``sh.600519``。
+        start: 起始日期 ``'YYYY-MM-DD'``。
+
+    Returns:
+        统一列 DataFrame（列定义见 ``core.abstractions.MarketDataSource``）。
+
+    Raises:
+        ValueError: 代码格式非法。
+    """
+```
 
 ---
 

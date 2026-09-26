@@ -10,8 +10,8 @@ s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 s.settimeout(5)
 try:
     s.connect((HOST, PORT))
-    print("✅ 端口可达，网络没问题")
+    print("✓ 端口可达，网络没问题")
 except Exception as e:
-    print(f"❌ 连不上：{type(e).__name__} {e}")
+    print(f"✗ 连不上：{type(e).__name__} {e}")
 finally:
     s.close()

@@ -273,10 +273,11 @@ python tools/diagnose_network.py --quick    # 只跑 TCP 层，几秒出结果
 
 ```bash
 python tests/smoke_test.py     # 离线冒烟：合成行情全链路，不依赖 MySQL / 网络
+python tools/check_style.py    # 源码注释风格自检（markdown 语法 / emoji）
 ```
 
 预期输出末尾：四组用例通过 + `全部断言通过 ✓`。  
-测试体系与加新测试的说明见开发文档 §9。
+测试体系与加新测试的说明见开发文档 §9；注释风格约定见开发文档 §8.6。
 
 ### 7.2 数据维护
 
@@ -328,7 +329,8 @@ mini-quant/
 ├── quant/                   # 主包，六层（core/data/factor/strategy/backtest/app/webapp）
 ├── tests/                   # 离线冒烟测试 + 数据源连通性脚本
 ├── tools/
-│   └── diagnose_network.py  # 数据源网络自检
+│   ├── diagnose_network.py  # 数据源网络自检
+│   └── check_style.py       # 源码注释风格自检
 ├── ReadMe.md                # 本文档（操作文档）
 └── requirements.txt
 ```

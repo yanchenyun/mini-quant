@@ -1,6 +1,6 @@
 """Web 接入层（Web Layer）—— FastAPI 后端 + ECharts 前端。
 
-Web 层只调 ``app.service``，**不直接触碰 data / backtest / factor**——
+Web 层只调 ``app.service``，不直接触碰 data / backtest / factor——
 依赖方向不倒置（Web → App → Backtest/Strategy/Factor → Core ← Data）。
 
 模块划分
