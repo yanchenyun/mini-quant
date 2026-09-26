@@ -24,6 +24,6 @@
 
 参见
 ----
-- 架构总览：``docs/ARCHITECTURE.md``
-- 设计决策：``docs/DESIGN_DECISIONS.md``
+- 开发文档（架构 / 接口契约 / 设计决策 / 扩展指南）：``docs/DEVELOPMENT.md``
+- 操作文档（启动 / 运维 / 排错）：根目录 ``ReadMe.md``
 """

@@ -34,6 +34,6 @@ A 股规则实现位置速查
 
 参见
 ----
-- 架构总览：``docs/ARCHITECTURE.md``
-- 设计决策（次 bar 撮合 / 涨跌停基准 / 责任链顺序）：``docs/DESIGN_DECISIONS.md``
+- 开发文档（架构 / A股规则 / 设计决策 / 扩展）：``docs/DEVELOPMENT.md``
+- 操作文档（启动 / 运维 / 排错）：根目录 ``ReadMe.md``
 """

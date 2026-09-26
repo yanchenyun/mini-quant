@@ -34,6 +34,6 @@ amount/trade_status/is_st``）；对下吸收各数据源 / 存储的脏格式�
 
 参见
 ----
-- 架构总览：``docs/ARCHITECTURE.md``
-- 扩展指南：``docs/EXTENSION_GUIDE.md``
+- 开发文档（架构 / 接口契约 / 新数据源步骤）：``docs/DEVELOPMENT.md`` §8
+- 操作文档（数据源选择 / 网络排错）：根目录 ``ReadMe.md`` §6
 """

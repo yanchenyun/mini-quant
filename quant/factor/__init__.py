@@ -28,9 +28,8 @@
 
 参见
 ----
-- 架构总览：``docs/ARCHITECTURE.md``
-- 设计决策（SSOT / 预热 / 长表存储）：``docs/DESIGN_DECISIONS.md``
-- 扩展指南（如何加新因子）：``docs/EXTENSION_GUIDE.md``
+- 开发文档（架构 / 新因子步骤 / SSOT 设计决策）：``docs/DEVELOPMENT.md``
+- 操作文档（启动 / 运维 / 排错）：根目录 ``ReadMe.md``
 """
 from .base import available, get, register
 from .engine import FactorEngine

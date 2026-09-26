@@ -30,6 +30,6 @@
 
 参见
 ----
-- API 手册：``docs/API.md``
-- 架构总览：``docs/ARCHITECTURE.md``
+- 开发文档（service 函数 / Web API 参考）：``docs/DEVELOPMENT.md`` §7
+- 操作文档（CLI 命令参考）：根目录 ``ReadMe.md`` §5
 """

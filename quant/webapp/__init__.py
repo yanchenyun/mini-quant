@@ -26,10 +26,10 @@ A 股惯例
 
 启动方式
 --------
-``python -m quant.app.cli serve [--port 8000]``（详见 ``docs/API.md``）。
+``python -m quant.app.cli serve [--port 8000]``（命令详见根目录 ``ReadMe.md`` §5）。
 
 参见
 ----
-- Web 端文档：``webapp/README.md``
-- API 手册：``docs/API.md``
+- 开发文档（Web API / 前端约定 / 扩展）：``docs/DEVELOPMENT.md`` §7 §10
+- 操作文档（启动 / 运维 / 排错）：根目录 ``ReadMe.md``
 """

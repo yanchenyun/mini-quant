@@ -22,7 +22,7 @@
 2. 实现 ``on_init``（必需）+ ``on_bar``（必需）+ 可选重写 ``on_new_day``；
 3. 如需因子，类属性声明 ``required_factors = ["xxx"]``；
 4. 在 ``app/cli.py`` 与 ``webapp/server.py`` 的策略选择处注册（详见
-   ``docs/EXTENSION_GUIDE.md``）。
+   ``docs/DEVELOPMENT.md`` §8）。
 
 防未来函数（4 道保险之策略侧）
 -----------------------------
@@ -33,6 +33,6 @@
 
 参见
 ----
-- 架构总览：``docs/ARCHITECTURE.md``
-- 扩展指南（如何加新策略）：``docs/EXTENSION_GUIDE.md``
+- 开发文档（架构 / 新策略步骤 / 设计决策）：``docs/DEVELOPMENT.md``
+- 操作文档（启动 / 运维 / 排错）：根目录 ``ReadMe.md``
 """
