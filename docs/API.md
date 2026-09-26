@@ -16,7 +16,7 @@
 | 子命令 | 作用 | 是否需联网 |
 |---|---|---|
 | `init-schema` | 幂等建库建表（行情日表/分钟表/因子表） | 否 |
-| `ingest` | 增量抓取行情入库（Baostock / AKShare） | 是 |
+| `ingest` | 增量抓取行情入库（Baostock / AKShare / Wind） | 是 |
 | `compute-factors` | 计算因子并落库（物化缓存，upsert 幂等） | 否 |
 | `backtest` | 运行回测并打印绩效 | 否 |
 | `repair-dt` | 修复分钟表历史脏时间戳（幂等） | 否 |
@@ -47,7 +47,7 @@ python -m quant.app.cli ingest --code sh.600000 --start 2020-01-01 [options]
 | `--end` | — | 今天 | 结束日期 `YYYY-MM-DD` |
 | `--adjust` | — | `2` | 复权：`1` 后复权 / `2` 前复权 / `3` 不复权 |
 | `--freq` | — | `1d` | 频率：`1d` 日线 / `5min` 5 分钟线 |
-| `--source` | — | `baostock` | 数据源：`baostock` / `akshare` |
+| `--source` | — | `baostock` | 数据源：`baostock` / `akshare` / `wind`（需 Wind 终端） |
 
 **自动增量**：从库中已有最新 bar 的次日开始续抓（库为空时用 `--start`）。
 
@@ -59,6 +59,9 @@ python -m quant.app.cli ingest --code sh.600000 --start 2020-01-01
 
 # AKShare 日线
 python -m quant.app.cli ingest --code sh.600000 --start 2020-01-01 --source akshare
+
+# Wind 日线（需本机安装并登录 Wind 金融终端）
+python -m quant.app.cli ingest --code sh.600000 --start 2020-01-01 --source wind
 
 # 5 分钟线（建议同时保留日线：分钟表的涨跌停基准依赖日线昨收关联）
 python -m quant.app.cli ingest --code sh.600000 --start 2025-01-01 --freq 5min
@@ -254,7 +257,7 @@ SrcCls = get_source("akshare")
 df = SrcCls.fetch_bars("sh.600000", "2024-01-01", "2024-12-31", freq="1d")
 ```
 
-可选：`baostock`（默认）、`akshare`。
+可选：`baostock`（默认）、`akshare`、`wind`（需本机安装并登录 Wind 金融终端）。
 
 ### 3.3 `ingest_bars(code, start, end=None, adjust="2", freq="1d", source="baostock", init_schema=False) -> int`
 

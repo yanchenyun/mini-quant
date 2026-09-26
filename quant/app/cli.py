@@ -32,8 +32,10 @@ def main() -> None:
                       help="复权：1后复权 2前复权 3不复权，默认2")
     p_in.add_argument("--freq", default="1d", choices=["1d", "5min"],
                       help="频率：1d 日线 5min 5分钟线，默认1d")
-    p_in.add_argument("--source", default="baostock", choices=["baostock", "akshare"],
-                      help="数据源：baostock（默认免费稳定）/ akshare（免费聚合多源）")
+    p_in.add_argument("--source", default="baostock",
+                      choices=["baostock", "akshare", "wind"],
+                      help="数据源：baostock（默认免费稳定）/ akshare（免费聚合多源）"
+                           "/ wind（需本机安装并登录 Wind 终端）")
 
     p_cf = sub.add_parser("compute-factors",
                           help="计算因子并存入 MySQL（幂等 upsert；不传 --factors 则计算全部内置因子）")

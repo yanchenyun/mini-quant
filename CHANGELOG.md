@@ -7,6 +7,40 @@
 
 ## [Unreleased]
 
+### Added（新增）
+
+- **Wind（万得）数据源适配器** `quant/data/wind_source.py`（v0.4 新能力）：
+  数据质量与覆盖度优于免费源，需本机安装并登录 Wind 金融终端（WindPy 随终端
+  分发，**无法 pip 安装**）。适配要点：
+  - **WindPy 延迟导入**：未装终端的机器不受影响（import 本模块不触发 WindPy）；
+  - **代码格式双向转换**：本系统 `sh.600519` ↔ Wind `600519.SH`（含 `.BJ`）；
+  - **频率分发**：`1d` 走 `w.wsd`（日期序列）；`5/15/30/60min` 走 `w.wsi` + `BarSize`；
+  - **复权映射**：本系统 1/2/3 → Wind `PriceAdj=B/F/(空)`；
+  - **字段降级容错**：全量字段请求失败（如指数无换手率 `turn`）自动降级到核心
+    字段重试，保证"宁可少几个附加字段，也不能拉不到行情"；
+  - **连接幂等复用**：模块级连接状态 + 线程锁，多标的批量抓取不重复 `start`；
+  - **出口强校验**：缺必需列显式报错，防止"缺行情列"的坏数据静默入库。
+- **CLI `ingest` 新增 `--source wind`**：choices 扩为 `baostock / akshare / wind`
+- **离线回归用例** `tests/smoke_test.py::test_wind_source`：用 mock WindData 覆盖
+  组装与归一（含下述两个踩坑点的回归断言），不连接 Wind 终端
+- **Wind 冒烟测试** `tests/wind_test.py`：真实连 Wind 拉日线 / 分钟线 + 代码转换
+
+### Fixed（修复）
+
+- **历史踩坑 #5**：Wind 接口两处隐蔽的格式差异 ——
+  ① `w.wsd` 返回**大写**字段名（请求 `open` 实际回 `OPEN`、`amt` 回 `AMT`），
+  若按小写字段名取列会**全部落空**，静默产出"只有 code/dt、没有行情列"的坏数据；
+  ② `trade_status` 返回的是**中文描述**（`交易` / `停牌`）而不是数字，用 `== 1`
+  判断会把所有交易日**误判为停牌**，导致回测零成交且不报任何错。
+  修复：字段名统一 `lower()` 归一 + 中文状态按"是否含停牌"归一（fail-open，
+  未知值一律视为可交易），并在流水线出口加强校验必要列，使这类问题不再静默通过。
+
+### Changed（变更）
+
+- `requirements.txt`：注明 WindPy 随 Wind 终端分发、不能 pip 安装
+- `docs/EXTENSION_GUIDE.md`：数据源章节补充"已内置三源"与 Wind 注册示例
+- `ReadMe.md` / `quant/data/__init__.py`：数据源与目录说明同步为三源
+
 ### 计划中
 - Web 分钟 K 线聚合渲染（前端按日聚合或增量加载优化）
 - pytest 单测框架接入（撮合与风控 100% 覆盖）

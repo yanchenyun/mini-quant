@@ -196,6 +196,7 @@ def get_source(name: str = "baostock"):
     sources = {
         "baostock": BaostockSource,
         "akshare": AkshareSource,
+        "wind": WindSource,           # ← 已内置（v0.4，需本机 Wind 终端）
         "your_source": YourSource,    # ← 加这一行
     }
     if name not in sources:
@@ -203,13 +204,21 @@ def get_source(name: str = "baostock"):
     return sources[name]
 ```
 
+> **已内置三个源**：`baostock`（默认免费稳定）、`akshare`（免费聚合多源）、
+> `wind`（万得，需本机安装并登录 Wind 终端）。三者输出**完全同构**的统一列，
+> 上层引擎 / 策略 / 仓储零感知——这正是适配器模式的价值。
+>
+> `wind_source.py` 另有两个可借鉴的实现技巧：
+> ① **延迟导入**第三方 SDK（未装终端的机器不受影响）；
+> ② **字段降级容错**（全量字段请求失败时降级核心字段重试）；
+
 ### 3.3 CLI 暴露
 
 **`quant/app/cli.py`**：
 
 ```python
 p_in.add_argument("--source", default="baostock",
-                  choices=["baostock", "akshare", "your_source"],   # ← 加进来
+                  choices=["baostock", "akshare", "wind", "your_source"],   # ← 加进来
                   help="...")
 ```
 

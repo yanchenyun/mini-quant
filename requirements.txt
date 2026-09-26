@@ -1,5 +1,13 @@
+# ── 数据源 ──────────────────────────────────────────────────────────
+# 项目内置三个数据源适配器，按需装其一即可：baostock / akshare / wind
+# （CLI 用 --source 选择，见 quant/data/__init__.py）
 baostock>=0.8.8
 akshare>=1.14
+# WindPy：随 Wind 金融终端分发，**无法通过 pip 安装**（import 名 WindPy，
+# 装好终端并登录后即可 --source wind；本机路径示例：
+# C:\Program Files (x86)\Wind\Wind.NET.Client\WindNET\x64）
+
+# ── 数据处理 / 存储 / 服务 ───────────────────────────────────────────
 pandas>=2.0
 numpy>=1.26
 PyMySQL>=1.1

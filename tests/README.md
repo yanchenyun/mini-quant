@@ -1,7 +1,11 @@
 # mini-quant · 测试文档
 
-> 本目录只有一份离线冒烟测试 `smoke_test.py`，不依赖任何外部服务（MySQL /
-> Baostock），用合成行情验证引擎 + 策略 + 风控 + 撮合 + 绩效 全链路。
+> 离线冒烟测试是 `smoke_test.py`：不依赖任何外部服务（MySQL / Baostock /
+> Wind），用合成行情 + mock 返回验证 引擎 + 策略 + 风控 + 撮合 + 绩效 +
+> 数据源适配器 全链路。
+>
+> 另有需要外部依赖的连通性脚本：`baostock_test.py`（baostock 端口连通性）、
+> `wind_test.py`（Wind 终端登录 + 真实拉取日线/分钟线）。
 >
 > 本文档说明覆盖矩阵、加新测试的步骤、踩过的坑。
 
@@ -14,6 +18,7 @@
 | `test_daily` | 日线回归（v0.1 行为不变）：双均线 MA5/20、MA10/60 | v0.1 兼容基线 |
 | `test_minute` | 5 分钟频率（v0.2 新能力）：日界解禁、T+1、净值按交易日 | **多频率兼容** 核心 |
 | `test_factor` | 因子库（v0.3 新能力）：计算正确性、预热、防未来、因子策略全链路 | **SSOT** + **防未来** 核心 |
+| `test_wind_source` | Wind 适配器（v0.4 新能力）：代码转换、WindData 组装、列归一、出口校验 | **适配器接缝** 回归（两个实测踩坑点） |
 
 ### 1.1 `test_daily` 详细断言
 
@@ -74,6 +79,41 @@ r = engine2.run()
 assert len(r.trades) > 0  # 合成行情涨跌交替，动量必然变号 → 应有交易
 ```
 
+### 1.4 `test_wind_source` 详细断言
+
+Wind 适配器**不连接 Wind 终端**，用 `FakeWindData`（结构等价于 WindPy 的
+`WindData`：字段名 + 时间列表 + 按字段分组的数据）复现**真实**返回形态。
+其中两条断言直接来自实测踩坑（见 CHANGELOG「历史踩坑 #5」）：
+
+```python
+# 1) 代码格式双向转换
+assert _to_wind_code("sh.600519") == "600519.SH"
+assert _from_wind_code("600519.SH") == "sh.600519"
+
+# 2) 日线：wsd 返回【大写】字段名，且 trade_status 是【中文描述】而非数字
+out = FakeWindData(fields=["OPEN", "HIGH", "LOW", "CLOSE", "PRE_CLOSE",
+                           "VOLUME", "AMT", "PCT_CHG", "TURN", "TRADE_STATUS"],
+                   times=[date(2024, 1, 2), ...],
+                   data=[..., ["交易", "交易", "停牌"]])
+df = _finalize(_winddata_to_frame(out, "600519.SH"),
+               "sh.600519", "1d", "2", minute=False)
+
+assert "amount" in df.columns and "AMT" not in df.columns   # 字段名须归一为小写
+assert df["trade_status"].tolist() == [1, 1, 0]             # '交易'->1、'停牌'->0
+
+# 3) 分钟线：wsi 字段名是小写、请求 amt 实际返回 amount、昨收留 0 待回填
+assert dfm["dt"].tolist() == ["2024-01-02 09:35:00", "2024-01-02 09:40:00"]
+assert dfm["pre_close"].eq(0.0).all()
+
+# 4) 出口校验：缺必需列必须显式报错，而不是静默返回缺列数据
+try:
+    _finalize(_winddata_to_frame(FakeWindData(["CLOSE", "VOLUME"], ...), ...), ...)
+except RuntimeError as e:
+    assert "缺少必需列" in str(e)
+else:
+    raise AssertionError("缺必需列时应抛 RuntimeError")
+```
+
 ---
 
 ## 2. 跑测试
@@ -88,11 +128,12 @@ python tests/smoke_test.py
 日线回归用例通过 ✓
 5 分钟频率用例通过 ✓
 因子库用例通过 ✓
+Wind 适配器用例通过 ✓
 
 全部断言通过 ✓
 ```
 
-**不需要任何外部依赖**（MySQL / Baostock / 网络）—— 改完任何代码都先跑这一遍。
+**不需要任何外部依赖**（MySQL / Baostock / Wind / 网络）—— 改完任何代码都先跑这一遍。
 
 ---
 

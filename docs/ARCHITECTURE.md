@@ -67,7 +67,7 @@ data ◀── app         （service 构造 repo / source）
 
 | 接口 | 类型 | 职责 | 当前实现 | 可替换方向 |
 |---|---|---|---|---|
-| `MarketDataSource` | Protocol | 外部行情源 | `BaostockSource`、`AkshareSource` | Tushare / Wind / …… |
+| `MarketDataSource` | Protocol | 外部行情源 | `BaostockSource`、`AkshareSource`、`WindSource` | Tushare / …… |
 | `DataRepository` | Protocol | 本地行情仓储 | `MySQLBarRepo` | Parquet + DuckDB |
 | `Strategy` | ABC | 策略钩子 | `DoubleMAStrategy`、`FactorMomentumStrategy` | 任意子类 |
 | `Factor` | ABC | 因子契约 | 5 个内置因子 | 任意子类 |
@@ -94,7 +94,7 @@ data ◀── app         （service 构造 repo / source）
 | **O** 开闭 | 新数据源 / 新策略 / 新因子 / 新风控 = 新增一个实现类 + 注册一行，改 0 行旧代码 | 见 `docs/EXTENSION_GUIDE.md` |
 | **L** 里氏替换 | `SimBroker` 与未来 `QmtBroker` 实现同一 `Broker` 协议且行为契约一致 → 回测代码 0 修改跑实盘 | `backtest/engine.py` 注入 `SimBroker` 处 |
 | **I** 接口隔离 | 策略只见 `StrategyContext` 窄接口（history 只到当前 bar），不见引擎 / 数据库 | `core/abstractions.py:StrategyContext` |
-| **D** 依赖倒置 | 引擎 / 策略依赖 core 抽象；MySQL / Baostock / AKShare 都是可替换插件 | `core/abstractions.py` 定义接口，其它层实现 |
+| **D** 依赖倒置 | 引擎 / 策略依赖 core 抽象；MySQL / Baostock / AKShare / Wind 都是可替换插件 | `core/abstractions.py` 定义接口，其它层实现 |
 
 ---
 
@@ -150,7 +150,7 @@ TradabilityRule  →  LotSizeRule  →  CashSufficiencyRule  →  AvailabilityRu
 
 ### 5.6 工厂 + 注册表
 
-- 数据源：`service.get_source(name)` 字典查找（`'baostock'` / `'akshare'`）；
+- 数据源：`service.get_source(name)` 字典查找（`'baostock'` / `'akshare'` / `'wind'`）；
 - 因子：`factor.register(Factor())` 全局字典，按 `name` 唯一索引；
 - 策略：CLI 参数 `--strategy {double_ma, factor_momentum}` 显式 import（简洁优先）。
 

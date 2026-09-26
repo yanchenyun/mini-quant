@@ -12,6 +12,10 @@ amount/trade_status/is_st``）；对下吸收各数据源 / 存储的脏格式�
 - ``akshare_source``   AKShare 数据源适配器（免费、聚合多源）：中文列名归一、
                       代码格式转换（``sh.600000`` ↔ ``600000``）、分钟数据按
                       30 天分段请求拼接、3 次重试应对网络抖动。
+- ``wind_source``      Wind（万得）数据源适配器（需本机安装并登录 Wind 终端）：
+                      WindPy 延迟导入（未装终端不影响其它源）、代码格式转换
+                      （``sh.600519`` ↔ ``600519.SH``）、``wsd``/``wsi`` 频率
+                      分发、字段降级容错、连接幂等复用。
 - ``mysql_repo``       MySQL 行情仓储（实现 ``DataRepository`` 协议）：freq 分表
                       日线 ``ods_d_stock_quotation_i`` + 分钟 ``ods_mi_stock_quotation_i``，
                       upsert 幂等写入；分钟读取 LEFT JOIN 日线表回填

@@ -15,6 +15,7 @@
 cd mini-quant
 python -m venv .venv && .venv\Scripts\activate     # Windows
 pip install -r requirements.txt                    # pandas / baostock / akshare / PyMySQL / FastAPI / uvicorn
+                                                   # 注：WindPy 随 Wind 终端分发，不能 pip 安装（见 data 层说明）
 ```
 
 依赖：Python 3.12 · MySQL 8（本机或局域网均可）。
@@ -39,6 +40,9 @@ python -m quant.app.cli ingest --code sh.600000 --start 2025-01-01 --freq 5min
 
 # ②d 用 AKShare 抓取 5 分钟线（注意：AKShare 分钟数据仅保留近期）
 python -m quant.app.cli ingest --code sh.600000 --start 2025-01-01 --freq 5min --source akshare
+
+# ②e 用 Wind 抓取（需本机安装并登录 Wind 金融终端；--source wind 同样支持 5/15/30/60min）
+python -m quant.app.cli ingest --code sh.600000 --start 2020-01-01 --source wind
 
 # ③ 命令行回测（日线/分钟、双均线/因子策略，同一套代码）
 python -m quant.app.cli backtest --code sh.600000 --start 2021-01-01 --end 2025-12-31 --fast 5 --slow 20
@@ -90,6 +94,7 @@ mini-quant/
 │   ├── data/            数据层（core 抽象的实现）
 │   │   ├── baostock_source.py  Baostock 适配器（fetch_bars 支持 1d/5/15/30/60min）
 │   │   ├── akshare_source.py   AKShare 适配器（免费聚合多源，中文列名归一，分钟分段请求）
+│   │   ├── wind_source.py      Wind 适配器（需 Wind 终端；延迟导入 + 字段降级 + 连接幂等复用）
 │   │   ├── mysql_repo.py      仓储：freq 分表 ods_d（日线）+ ods_mi（分钟）
 │   │   │                      + dwd_factor_value_i（因子长表）
 │   │   └── timeutil.py        时间戳归一（norm_dt：识别 17位毫秒串等 5 种形态）
@@ -129,6 +134,7 @@ mini-quant/
 | `core/portfolio.py` | 记账本 | `apply_fill` 按成交更新现金/持仓并结算盈亏；`snapshot` 每交易日记一条净值；单一职责样板 |
 | `data/baostock_source.py` | 数据源适配器（Adapter，吸收外部 API 的脏格式） | 归一 baostock 17 位毫秒数字串时间戳；`_FREQ_MAP` 支持到 60min |
 | `data/akshare_source.py` | AKShare 数据源适配器（免费、无需注册） | 中文列名→英文归一；代码格式转换 `sh.600000`↔`600000`；分钟线按 30 天分段请求拼接；3 次重试应对网络抖动 |
+| `data/wind_source.py` | Wind（万得）数据源适配器（需本机 Wind 终端） | WindPy **延迟导入**（未装终端不影响其它源）；代码转换 `sh.600519`↔`600519.SH`；`wsd`/`wsi` 频率分发 + `PriceAdj` 复权映射；字段降级容错；连接幂等复用；出口必需列强校验 |
 | `data/mysql_repo.py` | 仓储（Repository，对上屏蔽数据库细节） | freq 分表 + upsert 幂等写入；分钟读取 LEFT JOIN 日线表补涨跌停基准；因子长表读写 |
 | `data/timeutil.py` | 时间戳归一工具 | `norm_dt()` 兼容 17位毫秒串/14位/8位/无空格等形态 |
 | `factor/base.py` | 因子注册表 | `register/get/available`；新因子 = 一个子类 + 一行注册 |
@@ -233,7 +239,7 @@ A 股交易规则内置清单（回测可信的根基）：
 |---|---|---|
 | 语言 | Python 3.12 | 量化生态无可替代；策略研究表达力强 |
 | 数据处理 | pandas | DataFrame 贯穿全链路，与因子计算天然契合 |
-| 数据源 | Baostock（免费）+ AKShare（免费） | 双源互备，`--source` 一键切换；适配器模式可再加 Tushare |
+| 数据源 | Baostock + AKShare（免费）+ Wind（万得，需本机终端） | 三源互备，`--source` 一键切换且输出列完全同构；适配器模式可再加 Tushare |
 | 存储 | MySQL 8（PyMySQL） | 用户既有环境；仓储接口隔离，换 Parquet+DuckDB 只动 data 层 |
 | 回测 | 自研事件驱动内核 | 每一行都懂、可控；比 vn.py 轻、比 backtrader 透明 |
 | Web | FastAPI + ECharts（原生 HTML/JS） | 异步 + 自动文档；K 线图生态成熟 |
@@ -258,7 +264,7 @@ A 股交易规则内置清单（回测可信的根基）：
 
 | 接口 | 职责 | 当前实现 | 将来可换 |
 |---|---|---|---|
-| `MarketDataSource` | 外部行情数据源 | `BaostockSource`、`AkshareSource` | TushareSource 等 |
+| `MarketDataSource` | 外部行情数据源 | `BaostockSource`、`AkshareSource`、`WindSource` | TushareSource 等 |
 | `DataRepository` | 本地行情仓储（含可选因子读写） | `MySQLBarRepo` | Parquet + DuckDB |
 | `Strategy` (ABC) | 策略钩子：`on_init`/`on_bar`（必需）+ `on_new_day`（可选）；`required_factors` 声明因子依赖 | `DoubleMAStrategy`、`FactorMomentumStrategy` | 任何继承它的类 |
 | `Factor` (ABC) | 因子契约：`name`/`min_periods`/`compute`（只允许因果计算） | 5 个内置因子 | 任何子类（注册即用） |
@@ -291,6 +297,7 @@ A 股交易规则内置清单（回测可信的根基）：
 
 - **`baostock_source.py`（适配器 Adapter）**：吸收 Baostock 的脏格式（17 位毫秒数字串时间戳等），对上输出统一列 DataFrame；
 - **`akshare_source.py`（适配器 Adapter）**：AKShare 免费开源无需注册。吸收中文列名（`日期`→`dt`、`开盘`→`open`…）、代码格式（`sh.600000`↔`600000`）、复权标记（`2`→`qfq`）等差异；分钟线按 30 天分段请求拼接突破长度限制；3 次重试应对网络抖动；
+- **`wind_source.py`（适配器 Adapter）**：Wind（万得）需本机安装并登录 Wind 金融终端，WindPy 随终端分发、无法 pip 安装（故**延迟导入**，未装终端不影响其它源）。吸收代码格式（`sh.600519`↔`600519.SH`）、字段名大小写（返回 `OPEN`→归一 `open`）、`trade_status` 为**中文描述**（`交易`/`停牌`）、`amt`/`amount` 别名等差异；全量字段请求失败时自动降级核心字段重试；出口对必需列强校验，杜绝"缺行情列"的坏数据静默入库；
 - **`mysql_repo.py`（仓储 Repository）**：对上屏蔽数据库细节。freq 分表：`1d` → `ods_d_stock_quotation_i`，`5min` → `ods_mi_stock_quotation_i`；分钟读取时 LEFT JOIN 日线表回填日线口径的 `pre_close/trade_status/is_st`（日线缺失时优雅降级为不判涨跌停）；
 - 数据库约定：唯一键（日表 `code+date+adjust_flag`，分钟表 `code+date_time+adjust_flag`），写入 upsert 天然幂等；`adjust_flag` 复权标记 1=后复权 2=前复权 3=不复权（默认前复权）；ODS（Operational Data Store，贴源层）= 原样落库的外部数据。
 
@@ -382,7 +389,7 @@ cli.py main() 解析参数
 
 - 后复权双份存储（`adjust=1`）：前复权历史价会随分红漂移，严格长周期回测需要；复权因子表 + 任意时点复权重算；
 - 全市场批量抓取调度（交易日历对齐、断点续抓、并发限速）；
-- ~~双数据源互备~~ ✅ 已落地：Baostock + AKShare，`ingest --source akshare` 一键切换。
+- ~~双数据源互备~~ ✅ 已落地：Baostock + AKShare + Wind，`ingest --source baostock|akshare|wind` 一键切换。
 
 **回测面**
 
@@ -412,5 +419,5 @@ cli.py main() 解析参数
 | 未来函数（回测虚高） | 四道保险 + 单测逐点断言锁定 |
 | 过拟合 | 样本外验证、参数敏感性分析、寻优结果打折评估 |
 | 前复权历史漂移 | 切后复权双份存储（§数据面） |
-| 数据源单点 | ~~适配器模式预留~~ → ✅ Baostock + AKShare 双源互备（`--source` 切换） |
+| 数据源单点 | ~~适配器模式预留~~ → ✅ Baostock + AKShare + Wind 三源互备（`--source` 切换） |
 | 文档腐化 | 每个大版本提交时同步更新本文档 |

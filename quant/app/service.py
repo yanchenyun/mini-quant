@@ -11,6 +11,7 @@ from ..config import BacktestSettings, Settings, load_settings
 from ..core.abstractions import Strategy
 from ..data.baostock_source import BaostockSource
 from ..data.akshare_source import AkshareSource
+from ..data.wind_source import WindSource
 from ..data.mysql_repo import MySQLBarRepo
 from ..factor import FactorEngine, available as available_factors, get as get_factor
 from ..strategy.double_ma import DoubleMAStrategy
@@ -25,11 +26,12 @@ def get_source(name: str = "baostock"):
     """按名称获取数据源类（工厂方法）。
 
     返回数据源类（非实例），因其所有方法均为 @staticmethod。
-    可选：'baostock'（默认）、'akshare'。
+    可选：'baostock'（默认）、'akshare'、'wind'（需本机 Wind 终端）。
     """
     sources = {
         "baostock": BaostockSource,
         "akshare": AkshareSource,
+        "wind": WindSource,
     }
     if name not in sources:
         raise ValueError(f"未知数据源: {name}（可选: {list(sources)}）")
@@ -42,7 +44,7 @@ def ingest_bars(code: str, start: str, end: str | None = None,
                 init_schema: bool = False) -> int:
     """增量抓取并存入 MySQL。从库中已有最新 bar 的当日/次日续抓。
 
-    source: 数据源名称，'baostock'（默认）或 'akshare'。
+    source: 数据源名称，'baostock'（默认）/ 'akshare' / 'wind'。
     """
     repo, src = get_repo(), get_source(source)
     if init_schema:
