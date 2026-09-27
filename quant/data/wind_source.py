@@ -1,38 +1,34 @@
 """Wind 数据源适配器（MarketDataSource 实现）。
 
 WindPy 是万得金融终端配套的 Python 接口，数据质量与覆盖度优于免费源，
-但它有三个"脏差异"，正是本适配器要吸收的部分：
+但它有三个“脏差异”，正是本适配器要吸收的部分：
 
 1. 运行前置条件：必须先安装并登录 Wind 金融终端。WindPy 随终端分发
-   （典型路径 ``C:\\Program Files (x86)\\Wind\\Wind.NET.Client\\WindNET\\x64``），
+   （典型路径 C:\\Program Files (x86)\\Wind\\Wind.NET.Client\\WindNET\\x64），
    不能通过 pip 安装。因此本模块对 WindPy 一律延迟导入——没装终端的
-   机器照样能 import 本文件（只是调用 ``fetch_bars`` 时才抛 ImportError）。
-2. 代码格式：Wind 用 ``600519.SH``（数字.大写交易所后缀），本系统用
-   ``sh.600519``（小写交易所前缀.数字），需要双向转换。
-3. 返回结构：``WindData`` 把结果按"字段"分组存放——单标的查询时
-   ``.Data[i]`` 是第 i 个字段的时间序列（不是行记录）；时间以
-   ``datetime.date`` / ``datetime.datetime`` 对象给出（不是字符串），
+   机器照样能 import 本文件（只是调用 fetch_bars 时才抛 ImportError）。
+2. 代码格式：Wind 用 600519.SH（数字.大写交易所后缀），本系统用
+   sh.600519（小写交易所前缀.数字），需要双向转换。
+3. 返回结构：WindData 把结果按“字段”分组存放——单标的查询时
+   .Data[i] 是第 i 个字段的时间序列（不是行记录）；时间以
+   datetime.date / datetime.datetime 对象给出（不是字符串），
    需要自行组装成 DataFrame。
 
 与 Baostock / AKShare 的口径对齐（上层完全无感知）：
 
-============  ==========================================  ==================
-维度          本系统口径                                    Wind 口径
-============  ==========================================  ==================
-复权          1=后复权 2=前复权 3=不复权                    ``PriceAdj=B/F/(空)``
-频率          ``1d`` / ``5min`` / ``15/30/60min``          ``wsd`` / ``wsi`` + ``BarSize``
-代码          ``sh.600519``                                ``600519.SH``
-输出列        code/dt/trade_date/open/high/low/close/      （组装后对齐左列）
-              pre_close/volume/amount/trade_status/is_st
-============  ==========================================  ==================
+- 复权：本系统 1=后复权 2=前复权 3=不复权，对应 Wind 的 PriceAdj=B/F/(空)。
+- 频率：本系统 1d / 5min / 15min / 30min / 60min，对应 Wind 的 wsd / wsi 加 BarSize。
+- 代码：本系统 sh.600519，对应 Wind 的 600519.SH。
+- 输出列：统一为 code/dt/trade_date/open/high/low/close/pre_close/volume/
+  amount/trade_status/is_st，Wind 原始结果组装后对齐这些列。
 
 分钟线的 pre_close / trade_status / is_st：Wind 分钟序列不提供，
 按既有约定给安全默认（可交易、非 ST、昨收 0），由仓储层 LEFT JOIN 日线表
 回填真实昨收——与 BaostockSource / AkshareSource 处理完全一致。
 
 字段降级：Wind 可请求的字段集合随终端版本与账号权限变化（例如指数没有
-换手率 ``turn``）。因此把日线字段分成"全量"与"核心"两组：全量请求失败时
-自动降级到核心字段重试，保证"宁可少几个附加字段，也不能拉不到行情"。
+换手率 turn）。因此把日线字段分成“全量”与“核心”两组：全量请求失败时
+自动降级到核心字段重试，保证“宁可少几个附加字段，也不能拉不到行情”。
 """
 from __future__ import annotations
 
@@ -44,7 +40,7 @@ import pandas as pd
 
 from .timeutil import norm_dt
 
-# ── 代码格式转换 ──────────────────────────────────────────────────────────
+# 代码格式转换
 # 本系统交易所前缀（小写） -> Wind 交易所后缀（大写）
 _SUFFIX_MAP = {"sh": "SH", "sz": "SZ", "bj": "BJ"}
 
@@ -53,10 +49,10 @@ def _to_wind_code(code: str) -> str:
     """本系统 'sh.600519' → Wind '600519.SH'。
 
     Args:
-        code: 本系统证券代码，形如 ``sh.600519`` / ``sz.000001`` / ``bj.430047``。
+        code: 本系统证券代码，形如 sh.600519 / sz.000001 / bj.430047。
 
     Returns:
-        Wind 代码，形如 ``600519.SH``。
+        Wind 代码，形如 600519.SH。
 
     Raises:
         ValueError: 代码格式非法（缺交易所前缀或未知前缀）。
@@ -80,16 +76,16 @@ def _from_wind_code(wind_code: str) -> str:
     return f"{suffix}.{number}"
 
 
-# ── 复权标记转换 ──────────────────────────────────────────────────────────
+# 复权标记转换
 # 本系统：1=后复权 2=前复权 3=不复权
 # Wind ：B=后复权 F=前复权 空=不复权
 _ADJUST_MAP = {"1": "B", "2": "F", "3": ""}
 
-# ── 频率映射 ──────────────────────────────────────────────────────────────
+# 频率映射
 # 分钟频率 -> Wind wsi 的 BarSize（单位：分钟）
 _FREQ_MAP = {"5min": 5, "15min": 15, "30min": 30, "60min": 60}
 
-# ── 字段定义 ──────────────────────────────────────────────────────────────
+# 字段定义
 # 日线"全量"字段（含换手率、涨跌幅、交易状态等附加信息）
 _DAILY_FIELDS = ["open", "high", "low", "close", "pre_close", "volume",
                  "amt", "pct_chg", "turn", "trade_status"]
@@ -111,15 +107,13 @@ _NUM_COLS = ["open", "high", "low", "close", "pre_close",
 _REQUIRED_COLS = ["open", "high", "low", "close", "volume"]
 
 
-# ══════════════════════════════════════════════════════════════════════════
 # 连接管理（延迟导入 + 幂等复用）
-# ══════════════════════════════════════════════════════════════════════════
 _lock = threading.Lock()
 _started = False   # 模块级连接状态：WindPy 单进程只需 start 一次
 
 
 def _load_wind():
-    """延迟导入 WindPy 模块对象 ``w``（未安装 Wind 终端时给出明确指引）。"""
+    """延迟导入 WindPy 模块对象 w（未安装 Wind 终端时给出明确指引）。"""
     try:
         from WindPy import w
     except ImportError as exc:   # pragma: no cover - 取决于本机是否装 Wind
@@ -132,16 +126,16 @@ def _load_wind():
 
 @contextmanager
 def _wind_session(wait_time: int = 120):
-    """确保 WindPy 已连接，yield 出模块级 ``w``。
+    """确保 WindPy 已连接，yield 出模块级 w。
 
-    幂等：已连接时直接复用（``w.start()`` 本身也不重复启动，但显式判断可
+    幂等：已连接时直接复用（w.start() 本身也不重复启动，但显式判断可
     避免无谓的 120s 等待）。线程安全：用模块锁包住首次启动。
 
     刻意不在此处 stop——WindPy 在进程退出时自动 stop，反复 start/stop
     只会拖慢多标的批量抓取。
 
     Args:
-        wait_time: ``w.start()`` 的命令超时时间（秒），首次连接 Wind 终端
+        wait_time: w.start() 的命令超时时间（秒），首次连接 Wind 终端
             可能需要较久。
     """
     global _started
@@ -162,15 +156,13 @@ def _wind_session(wait_time: int = 120):
     yield w
 
 
-# ══════════════════════════════════════════════════════════════════════════
 # WindData -> DataFrame 组装
-# ══════════════════════════════════════════════════════════════════════════
 def _to_dt_str(v) -> str:
     """Wind 时间元素 → 'YYYY-MM-DD'（日线）/ 'YYYY-MM-DD HH:MM:SS'（分钟）。
 
-    WindPy 的 ``.Times`` 元素类型随接口而异：``wsd`` / ``tdays`` 为
-    ``datetime.date``，``wsi`` 为 ``datetime.datetime``（含时分秒）。
-    ``datetime`` 是 ``date`` 的子类，故必须先判 ``datetime``。
+    WindPy 的 .Times 元素类型随接口而异：wsd / tdays 为
+    datetime.date，wsi 为 datetime.datetime（含时分秒）。
+    datetime 是 date 的子类，故必须先判 datetime。
     """
     if isinstance(v, datetime):
         return v.strftime("%Y-%m-%d %H:%M:%S")
@@ -183,13 +175,13 @@ def _to_dt_str(v) -> str:
 def _winddata_to_frame(out, code: str) -> pd.DataFrame:
     """把 WindData 组装成 'code + dt + 各字段列' 的 DataFrame。
 
-    单标的查询时 Wind 的 ``.Data`` 按字段分组（``.Data[i]`` = 第 i 个字段的
-    时间序列），故这里按 ``.Fields`` 的顺序逐列取回；长度不齐时按 ``.Times``
+    单标的查询时 Wind 的 .Data 按字段分组（.Data[i] = 第 i 个字段的
+    时间序列），故这里按 .Fields 的顺序逐列取回；长度不齐时按 .Times
     对齐截断/补齐，避免 DataFrame 构造失败。
 
-    注意字段名大小写：Wind 返回的 ``.Fields`` 是大写（请求 ``'open'``
-    实际回 ``'OPEN'``，``'trade_status'`` 回 ``'TRADE_STATUS'``）。若直接拿它
-    当列名，后续按小写字段名取值会全部落空——这里统一 ``lower()`` 归一，
+    注意字段名大小写：Wind 返回的 .Fields 是大写（请求 open
+    实际回 OPEN，trade_status 回 TRADE_STATUS）。若直接拿它
+    当列名，后续按小写字段名取值会全部落空——这里统一 lower() 归一，
     是小写口径与 Wind 大写口径之间的关键接缝。
     """
     times = list(out.Times)
@@ -262,7 +254,7 @@ def _finalize(df: pd.DataFrame, code: str, freq: str, adjust: str,
 
 
 def _options(adjust: str, bar_size: int | None = None) -> str:
-    """拼 Wind options 字符串，如 ``'BarSize=5;PriceAdj=F'``。"""
+    """拼 Wind options 字符串，如 'BarSize=5;PriceAdj=F'。"""
     opts: list[str] = []
     if bar_size is not None:
         opts.append(f"BarSize={bar_size}")
@@ -272,9 +264,7 @@ def _options(adjust: str, bar_size: int | None = None) -> str:
     return ";".join(opts)
 
 
-# ══════════════════════════════════════════════════════════════════════════
 # 适配器主体
-# ══════════════════════════════════════════════════════════════════════════
 class WindSource:
     """Wind 数据源适配器（MarketDataSource 实现）。
 
@@ -289,15 +279,15 @@ class WindSource:
         """按频率拉取行情，返回统一列 DataFrame（与 BaostockSource 输出格式一致）。
 
         Args:
-            code: 本系统证券代码，如 ``sh.600519``。
-            start: 起始日期 ``'YYYY-MM-DD'``。
-            end: 结束日期 ``'YYYY-MM-DD'``。
-            freq: ``'1d'`` 日线；``'5min'/'15min'/'30min'/'60min'`` 分钟线。
+            code: 本系统证券代码，如 sh.600519。
+            start: 起始日期 'YYYY-MM-DD'。
+            end: 结束日期 'YYYY-MM-DD'。
+            freq: '1d' 日线；'5min'/'15min'/'30min'/'60min' 分钟线。
             adjust: 复权标记，1=后复权 2=前复权 3=不复权（默认前复权）。
 
         Returns:
-            统一列 DataFrame：``code/dt/trade_date/date/open/high/low/close/
-            pre_close/volume/amount/trade_status/is_st/adjust_flag``（附加列
+            统一列 DataFrame：code/dt/trade_date/date/open/high/low/close/
+            pre_close/volume/amount/trade_status/is_st/adjust_flag（附加列
             视 Wind 字段可用性，缺失则省略）。
 
         Raises:
@@ -317,11 +307,11 @@ class WindSource:
 
         return _finalize(df, code, freq, adjust, minute)
 
-    # ── 日线：w.wsd（日期序列）────────────────────────────────────────────
+    # 日线：w.wsd（日期序列）
     @staticmethod
     def _fetch_daily(w, wind_code: str, start: str, end: str,
                      adjust: str) -> pd.DataFrame:
-        """日线：先请求全量字段，失败降级到核心字段（如指数无 ``turn``）。"""
+        """日线：先请求全量字段，失败降级到核心字段（如指数无 turn）。"""
         opts = _options(adjust)
         out = w.wsd(wind_code, ",".join(_DAILY_FIELDS), start, end, opts)
         if out.ErrorCode != 0:
@@ -334,11 +324,11 @@ class WindSource:
             )
         return _winddata_to_frame(out, wind_code)
 
-    # ── 分钟线：w.wsi（日内序列 + BarSize）───────────────────────────────
+    # 分钟线：w.wsi（日内序列 + BarSize）
     @staticmethod
     def _fetch_minute(w, wind_code: str, start: str, end: str,
                       freq: str, adjust: str) -> pd.DataFrame:
-        """分钟线：``w.wsi`` + ``BarSize``；时间区间补足到整日避免漏 bar。"""
+        """分钟线：w.wsi + BarSize；时间区间补足到整日避免漏 bar。"""
         if freq not in _FREQ_MAP:
             raise ValueError(f"不支持的频率: {freq}（可选: {list(_FREQ_MAP)}）")
 
@@ -356,10 +346,10 @@ class WindSource:
             )
         return _winddata_to_frame(out, wind_code)
 
-    # ── 交易日历：w.tdays ────────────────────────────────────────────────
+    # 交易日历：w.tdays
     @staticmethod
     def fetch_trade_dates(start: str, end: str) -> list[str]:
-        """交易日历（用于增量校验），返回 ``['YYYY-MM-DD', ...]``。"""
+        """交易日历（用于增量校验），返回 ['YYYY-MM-DD', ...]。"""
         with _wind_session() as w:
             out = w.tdays(start, end, "Days=Trading")
         if out.ErrorCode != 0:
