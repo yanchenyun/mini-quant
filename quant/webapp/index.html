@@ -39,15 +39,10 @@
     <option value="1d" selected>日线</option>
     <option value="5min">5分钟</option>
   </select></div>
-  <div class="field"><label>策略</label><select id="strategy" style="width:110px">
-    <option value="double_ma" selected>双均线</option>
-    <option value="factor_momentum">动量因子</option>
-  </select></div>
+  <div class="field"><label>策略</label><select id="strategy" style="width:110px"></select></div>
+  <span id="strategy_params" style="display:contents"></span>
   <div class="field"><label>开始日期</label><input id="start" value="2022-01-01"></div>
   <div class="field"><label>结束日期</label><input id="end" value="2025-12-31"></div>
-  <div class="field"><label>快线周期</label><input id="fast" value="5" style="width:70px"></div>
-  <div class="field"><label>慢线周期</label><input id="slow" value="20" style="width:70px"></div>
-  <div class="field"><label>动量窗口</label><input id="window" value="20" style="width:70px"></div>
   <button id="run">运行回测</button>
   <span id="status"></span>
 </div>
@@ -80,6 +75,34 @@ async function loadCodes() {
   } catch (e) { $('status').textContent = '读取代码列表失败（数据库未就绪？）'; }
 }
 
+// 策略下拉与参数输入框由 /api/strategies 动态渲染（新增策略前端零改动）
+let strategies = [];
+
+async function loadStrategies() {
+  try {
+    const r = await fetch('/api/strategies');
+    strategies = await r.json();
+  } catch (e) { $('status').textContent = '读取策略列表失败'; return; }
+  $('strategy').innerHTML = strategies.map(s =>
+    `<option value="${s.name}">${s.label}</option>`).join('');
+  renderParams();
+  $('strategy').onchange = renderParams;
+}
+
+function renderParams() {
+  const spec = strategies.find(s => s.name === $('strategy').value);
+  if (!spec) return;
+  $('strategy_params').innerHTML = spec.params.map(p => {
+    const id = 'p_' + p.name, label = p.help || p.name;
+    if (p.choices)
+      return `<div class="field"><label>${label}</label><select id="${id}" style="width:70px">` +
+        p.choices.map(c => `<option${c == p.default ? ' selected' : ''}>${c}</option>`).join('') +
+        '</select></div>';
+    return `<div class="field"><label>${label}</label>` +
+      `<input id="${id}" value="${p.default}" style="width:70px"></div>`;
+  }).join('');
+}
+
 function cardHTML(k, v, cls) {
   return `<div class="card"><div class="k">${k}</div><div class="v ${cls || ''}">${v}</div></div>`;
 }
@@ -107,12 +130,15 @@ function render(data) {
   const sellIdx = {}; data.sells.forEach(s => sellIdx[s[0]] = s[3]);
 
   const freqLabel = data.params.freq === '5min' ? '5分钟' : '日线';
-  const stratLabel = data.params.strategy === 'factor_momentum'
-    ? `momentum_${data.params.window}` : `MA${data.params.fast}/${data.params.slow}`;
+  const stratLabel = data.strat_label || data.params.strategy;
+  const overlays = (k.overlays || []).map((o, i) => ({
+    name: o.name, type: 'line', data: o.data, showSymbol: false,
+    lineStyle: { width: 1.2 }, color: ['#185fa5', '#ef9f27'][i % 2]
+  }));
   kchart.setOption({
     title: { text: `${data.params.code} · ${stratLabel} · ${freqLabel}`, left: 10, textStyle: { fontSize: 13 } },
     tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } },
-    legend: { top: 0, right: 10, data: ['MA' + data.params.fast, 'MA' + data.params.slow], textStyle: { fontSize: 11 } },
+    legend: { top: 0, right: 10, data: overlays.map(o => o.name), textStyle: { fontSize: 11 } },
     grid: [{ left: 60, right: 20, top: 40, height: '68%' }],
     xAxis: [{ type: 'category', data: k.dates, boundaryGap: true }],
     yAxis: [{ scale: true }],
@@ -120,8 +146,7 @@ function render(data) {
     series: [
       { name: 'K线', type: 'candlestick', data: k.dates.map((d, i) => [k.open[i], k.close[i], k.low[i], k.high[i]]),
         itemStyle: { color: UP, color0: DOWN, borderColor: UP, borderColor0: DOWN } },
-      { name: 'MA' + data.params.fast, type: 'line', data: k.ma_fast, showSymbol: false, lineStyle: { width: 1.2 }, color: '#185fa5' },
-      { name: 'MA' + data.params.slow, type: 'line', data: k.ma_slow, showSymbol: false, lineStyle: { width: 1.2 }, color: '#ef9f27' },
+      ...overlays,
       { name: '买入', type: 'scatter', data: buys.map(b => [b[0], b[1]]),
         symbol: 'triangle', symbolSize: 9, itemStyle: { color: UP },
         label: { show: false }, tooltip: { formatter: p => '买入 ' + p.value[0] } },
@@ -155,9 +180,10 @@ $('run').onclick = async () => {
   try {
     const p = new URLSearchParams({
       code: $('code').value, start: $('start').value, end: $('end').value,
-      fast: $('fast').value, slow: $('slow').value, freq: $('freq').value,
-      strategy: $('strategy').value, window: $('window').value,
+      freq: $('freq').value, strategy: $('strategy').value,
     });
+    document.querySelectorAll('#strategy_params [id^="p_"]').forEach(
+      el => p.set(el.id.slice(2), el.value));
     const r = await fetch('/api/backtest?' + p);
     if (!r.ok) throw new Error((await r.json()).detail || r.statusText);
     render(await r.json());
@@ -168,6 +194,7 @@ $('run').onclick = async () => {
 
 window.onresize = () => { kchart.resize(); echart.resize(); };
 loadCodes();
+loadStrategies();
 </script>
 </body>
 </html>

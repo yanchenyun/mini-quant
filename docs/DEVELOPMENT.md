@@ -5,7 +5,7 @@
 > 合规提示：本平台仅限个人研究自用，不对外提供服务、不构成投资建议。
 >
 > 版本演进：v0.1 日线回测 → v0.2 多频率（5 分钟）+ Web → v0.3 因子库 + 双源
-> → v0.4（Unreleased）Wind 数据源。详细变更历史见 `git log`。
+> → v0.4（Unreleased）Wind 数据源 + 策略注册表。详细变更历史见 `git log`。
 
 ---
 
@@ -34,7 +34,7 @@
 ┌────────────────────────────────────────────────────────────┐
 │ app / webapp   应用层（CLI / 业务装配 / Web）                 │
 ├────────────────────────────────────────────────────────────┤
-│ strategy      策略层    双均线 / 动量 / 用户自定义             │
+│ strategy      策略层    策略注册表 / 用户自定义策略              │
 ├────────────────────────────────────────────────────────────┤
 │ factor        因子层    注册表 / 内置因子 / FactorEngine      │
 ├────────────────────────────────────────────────────────────┤
@@ -65,8 +65,8 @@
 | 原则 | 落地方式 |
 |---|---|
 | **S** 单一职责 | core(契约)/data(取数)/backtest(撮合)/strategy(信号)/factor(计算)/webapp(展示) 各司其职 |
-| **O** 开闭 | 新数据源 / 新策略 / 新因子 / 新风控 = 新增实现类 + 注册一行，改 0 行旧代码 |
-| **L** 里氏替换 | `SimBroker` 与未来 `QmtBroker` 实现同一 `Broker` 协议 → 回测代码 0 修改跑实盘 |
+| **O** 开闭 | 新策略 / 新因子 = 新增实现 + 注册一行，改 0 行旧代码；新数据源 / 新风控 / 新频率同理，另需在工厂、责任链或频率表处登记一处 |
+| **L** 里氏替换 | 撮合通道实现同一 `Broker` 协议即可互换：换通道只改引擎的一处注入，策略与信号代码 0 修改 |
 | **I** 接口隔离 | 策略只见 `StrategyContext` 窄接口（history 只到当前 bar） |
 | **D** 依赖倒置 | 引擎 / 策略依赖 core 抽象；MySQL / Baostock / AKShare / Wind 都是可替换插件 |
 
@@ -95,11 +95,14 @@ mini-quant/
 │   │   └── timeutil.py        时间戳归一（norm_dt：识别 17 位毫秒串等 5 种形态）
 │   ├── factor/          因子层（纯计算不碰存储）
 │   │   ├── base.py       注册表：register / get / available
-│   │   ├── builtin.py    内置因子：momentum_20/60、volatility_20、bias_20、volume_ratio_5_20
+│   │   ├── builtin.py    内置因子集（实例清单见文件尾注册区）
 │   │   └── engine.py     FactorEngine：行情宽表 → 因子宽表
 │   ├── strategy/
-│   │   ├── double_ma.py       双均线策略（日线/分钟同一份代码）
-│   │   └── factor_momentum.py 因子策略示例（声明式依赖 + ctx.factor 取值）
+│   │   ├── registry.py   策略注册表：ParamSpec / StrategySpec / build_strategy
+│   │   │                 （新策略在此自注册，CLI / Web 自动发现）
+│   │   └── <策略模块>.py  每个策略一个文件：Strategy 子类 + 文件尾自注册；
+│   │                     落盘即被自动发现，故不逐个列名（清单见
+│   │                     strategy.available_strategies()）
 │   ├── backtest/
 │   │   ├── engine.py      事件驱动引擎（按 trade_date 驱动日界，bar 级推进）
 │   │   ├── sim_broker.py  模拟撮合：滑点/佣金/印花税/涨跌停拒单 + 挂单 TTL
@@ -112,12 +115,9 @@ mini-quant/
 │       ├── server.py      FastAPI（只调 service）
 │       └── index.html     ECharts 前端
 ├── tests/
-│   ├── smoke_test.py     离线冒烟测试（合成行情全链路，改完代码必跑）
-│   ├── baostock_test.py  Baostock 端口连通性脚本（需网络）
-│   └── wind_test.py      Wind 终端登录 + 真实拉取（需 Wind）
+│   └── smoke_test.py     离线冒烟测试（合成行情全链路，改完代码必跑）
 ├── tools/
-│   ├── diagnose_network.py  数据源网络自检（DNS/TCP/HTTPS/代理/端到端五层）
-│   └── check_style.py       源码注释风格自检（markdown 语法 / emoji）
+│   └── check_style.py       源码注释风格自检（markdown 语法 / 反引号 / emoji）
 ├── ReadMe.md             操作文档（启动 / 运维 / 技术栈）
 └── requirements.txt
 ```
@@ -133,7 +133,7 @@ mini-quant/
 | `data/mysql_repo.py` | 仓储（Repository） | freq 分表 + upsert 幂等；分钟读取 LEFT JOIN 日线表回填涨跌停基准 |
 | `factor/base.py` | 因子注册表 | `register/get/available`；新因子 = 一个子类 + 一行注册 |
 | `factor/engine.py` | FactorEngine 纯计算 | 行情宽表 → 因子宽表 `[code, dt, <因子列…>]`；因子名与行情列冲突显式报错 |
-| `strategy/double_ma.py` | 双均线策略 | 频率无关；容差交叉检测（eps=1e-8）防浮点精度丢信号 |
+| `strategy/registry.py` | 策略注册表 | `ParamSpec` / `StrategySpec` / `build_strategy`；CLI 选项、Web 下拉与参数输入框、K 线辅助线全部由此驱动 |
 | `backtest/engine.py` | 事件驱动引擎 | 按 `trade_date` 分组驱动日界；预构建 numpy 数组消除 O(n²)；`submit` 时序异常记 rejects 不静默吞单 |
 | `backtest/sim_broker.py` | 模拟撮合 | 信号次一 bar 开盘价成交；一字板拒单；限价单触及成交；挂单 TTL 默认 1（当日有效） |
 | `backtest/risk.py` | 风控责任链 | 顺序即优先级；`_pending_sell` 同日卖出防重 |
@@ -170,8 +170,8 @@ mini-quant/
 |---|---|---|---|---|
 | `MarketDataSource` | Protocol | 外部行情源 | `BaostockSource` / `AkshareSource` / `WindSource` | Tushare 等 |
 | `DataRepository` | Protocol | 本地行情仓储（四方法必备契约） | `MySQLBarRepo` | Parquet + DuckDB |
-| `Strategy` | ABC | 策略钩子 `on_init`/`on_bar`（必需）+ `on_new_day`（可选） | `DoubleMAStrategy`、`FactorMomentumStrategy` | 任意子类 |
-| `Factor` | ABC | 因子契约 `name`/`min_periods`/`compute` | 5 个内置因子 | 任意子类（注册即用） |
+| `Strategy` | ABC | 策略钩子 `on_init`/`on_bar`（必需）+ `on_new_day`（可选） | `strategy/` 下的内置策略（注册表自动发现） | 任意子类 |
+| `Factor` | ABC | 因子契约 `name`/`min_periods`/`compute` | `factor/builtin.py` 内置因子集 | 任意子类（注册即用） |
 | `FactorAccessor` | class | 因子只读视图（引擎逐 bar `iloc[:n]` 切片，防未来） | 引擎内部 | —— |
 | `Broker` | Protocol | 撮合通道 `submit`/`settle` | `SimBroker`（回测） | `QmtBroker`（实盘） |
 | `RiskRule` | ABC | 风控规则（责任链节点） | 4 条内置规则 | 新增子类即可 |
@@ -278,8 +278,8 @@ cli.py main() 解析参数
 | 100 股整手 | `ctx.buy/sell` 取整 + `LotSizeRule` |
 | 佣金 万2.5（最低 5 元） | `CostModel.commission` |
 | 印花税（仅卖出）万5 | `CostModel.commission` |
-| 滑点 0.2%（千2） | `SimBroker._try_fill` |
-| 涨停一字板拒买 / 跌停一字板拒卖 | `SimBroker._try_fill`（基准 = 日线昨收，±9.5% 近似；非一字板交由限价单逻辑） |
+| 滑点 0.2%（千2） | `CostModel.slippage` + 撮合侧成交价计算 |
+| 涨停一字板拒买 / 跌停一字板拒卖 | 撮合成交判定（基准 = 日线昨收，±9.5% 近似；非一字板交由限价单逻辑） |
 | 停牌 / ST 拒单 | `TradabilityRule` + 分钟表 LEFT JOIN 日线回填状态 |
 | 挂单当日有效 | `Order.ttl_bars=1`，到期自动撤（不入 rejects） |
 | 信号次一 bar 开盘价成交 | `SimBroker.settle`（防未来函数） |
@@ -291,7 +291,7 @@ cli.py main() 解析参数
 | 1 | `ctx.history` 只含当前 bar（含）及以前 | 引擎 numpy 数组切片引用（零拷贝） |
 | 2 | `ctx.factor()/factor_history()` 只看到 ≤ 当前 bar | 引擎 `_attach_factors` + 每 bar `iloc[:n]` 切片 |
 | 3 | 订单次一 bar 开盘价成交 | `SimBroker.settle`（信号当根不可能成交） |
-| 4 | 成交价 ± 滑点模拟真实偏差 | `SimBroker._try_fill` |
+| 4 | 成交价 ± 滑点模拟真实偏差 | 撮合侧成交价计算（见 §6.1 对应行） |
 
 ---
 
@@ -305,78 +305,101 @@ cli.py main() 解析参数
 |---|---|
 | `GET /` | 返回 `index.html` 静态页 |
 | `GET /api/codes` | DB 标的代码列表（前端下拉框） |
+| `GET /api/strategies` | 策略注册表规格清单（名称 / 中文标签 / 参数规格），前端据此渲染策略下拉与参数输入框 |
 | `GET /api/backtest` | 运行回测，返回前端渲染所需的全部 JSON |
 
 `GET /api/backtest` Query 参数：
 
 | 参数 | 类型 | 默认 | 说明 |
 |---|---|---|---|
-| `code` / `start` / `end` | str | ✅必填 | 证券代码 / 起止日期 |
+| `code` / `start` | str | ✅必填 | 证券代码 / 起始日期 |
+| `end` | str | 今天 | 结束日期 |
 | `freq` | str | `1d` | `1d` / `5min` |
-| `strategy` | str | `double_ma` | `double_ma` / `factor_momentum` |
-| `fast` / `slow` | int | `5` / `20` | 双均线周期（double_ma） |
-| `window` | int | `20` | 动量窗口（factor_momentum） |
+| `strategy` | str | ✅必填 | 策略名（可选值 = 注册表全部策略；不设默认，避免静默跑错策略） |
+| `--`（其余） | 随策略 | 规格默认值 | 所选策略的参数（名称 / 类型 / choices 见 `/api/strategies`） |
 
-校验：`freq`/`strategy` 非法 → `400`；`fast >= slow` → `400`；库内无数据 → `404`。
+校验：`strategy` 缺失 / 非法、`freq` 非法、参数未知 / 类型转型失败 / 取值不在
+choices 内、策略类构造校验不通过（如 `fast >= slow`）→ `400`；库内无数据 → `404`。
 
-响应 8 段 JSON：`params`（回显参数）、`metrics`（绩效指标集）、`kline`（dates +
-OHLC + ma_fast/ma_slow）、`equity_curve`（每交易日一条净值）、`benchmark`（期初
-全仓买入持有，按 bar 粒度）、`buys`/`sells`（成交明细）、`rejects`（风控拒单数）。
+响应 JSON：`params`（回显参数，含 `strategy_params` 子对象）、`strat_label`
+（结果标题的策略描述）、`metrics`（绩效指标集）、`kline`（dates + OHLC +
+`overlays` 辅助线数组，由策略的 overlay 钩子声明，无钩子则空）、
+`equity_curve`（每交易日一条净值）、`benchmark`（期初全仓买入持有，按 bar
+粒度）、`buys`/`sells`（成交明细）、`rejects`（风控拒单数）。
 
 ### 7.2 `app/service` 公共函数（CLI 与 Web 共用）
 
 新写脚本时优先复用这一层：
 
 ```python
-from quant.app.service import get_repo, get_source, ingest_bars, compute_factors, run_backtest
+from quant.app.service import (get_repo, get_source, ingest_bars,
+                                compute_factors, run_backtest)
+from quant.strategy import build_strategy
 
 repo = get_repo()                          # 仓储工厂 → MySQLBarRepo
 SrcCls = get_source("akshare")             # 数据源工厂（返回类，方法均为 @staticmethod）
-n = ingest_bars("sh.600000", "2020-01-01") # 增量抓取入库（幂等），返回入库行数
+n = ingest_bars("sh.600000", "2020-01-01", # 增量抓取入库（幂等），返回入库行数
+                source="akshare")          # source 必填关键字参数
 compute_factors("sh.600000", "2024-01-01",
-                names=["momentum_20"])     # 因子计算落库（物化缓存，upsert 幂等）
+                names=["momentum_20"])     # 因子计算落库（names 必填，物化缓存，upsert 幂等）
 result, bars = run_backtest(               # 取数 → 跑回测，返回 (结果, 行情帧)
-    code="sh.600000", start="2021-01-01",
-    strategy=FactorMomentumStrategy(60), freq="1d")
+    code="sh.600000", start="2021-01-01", freq="1d",
+    strategy=build_strategy("factor_momentum", {"window": 60}))
 ```
 
 要点：
 
-- `ingest_bars` 自动从库中最新 bar 的次日续抓；`ingest_daily` 为 v0.1 兼容别名。
+- 数据源 / 策略 / 因子三者一律显式传入，不设默认：`get_source(name)` 无默认
+  参数，`ingest_bars` 的 source 与 `compute_factors` 的 names 为必填关键字
+  参数，`run_backtest` 的 strategy 必传。CLI 的 `--source` / `--strategy` /
+  `--factors` 与 Web 的 strategy 查询参数同为必填——选错三者会静默产出错误
+  结论，故交由调用方每次明确选择。（策略自身的参数默认值仍由规格声明，供
+  `--help` 展示与前端输入框预填。）
+- `ingest_bars` 自动从库中最新 bar 的次日续抓。
+- `run_backtest` 的 strategy 必传（服务层不感知任何具体策略）；CLI 与 Web
+  都经 `quant.strategy.build_strategy` 构造，校验路径唯一。
 - `run_backtest` 的**因子预热**：`strategy.required_factors` 非空时自动多加载
   `max(min_periods) × 1.6 + 10` 日历日行情算因子，再裁剪回测区间注入引擎。
 - 配置优先级：`config/settings.yaml` < `QUANT_DB_*` 环境变量（详见操作文档 §3）。
+  配置文件不含数据源项——数据源只在命令/调用处指定。
 
 ---
 
 ## 8. 扩展指南
 
-> OCP 的兑现清单。共同铁律：**扩展不修改任何旧代码**（仅新增文件 + 注册处加一行）。
+> OCP 的兑现清单。策略与因子的扩展**不修改任何旧代码**（新增文件 / 追加一行
+> 注册即可）；数据源、频率、风控、存储等扩展点的改动量见下表，其中数据源与
+> 频率目前仍是「一处实现 + 一两处清单」的手工登记。
 
 ### 8.0 扩展点速查
 
 | 想做什么 | 改哪些文件 | 改动量 |
 |---|---|---|
-| 新策略 | `quant/strategy/<新文件>.py` + `cli.py` + `server.py` | 1 新文件 + 2 行 |
+| 新策略 | `quant/strategy/<新文件>.py`（策略类 + 文件尾自注册） | 1 新文件；CLI / Web / 前端自动发现，0 处入口改动 |
 | 新因子 | `quant/factor/builtin.py` 追加类 + register | 1 类 + 1 行 |
 | 新数据源 | `quant/data/<新源>.py` + `service.get_source` + `cli.py` choices | 1 新文件 + 2 行 |
 | 换存储 | 重写 `DataRepository` 实现 + `service.get_repo` | 1 文件 + 1 行 |
 | 新频率 | `baostock_source._FREQ_MAP` + `mysql_repo.TABLES` + DDL | 2 行 + DDL |
 | 新风控 | `risk.py` 追加子类 + `RiskChain.__init__` | 1 类 + 1 行 |
-| 切实盘 | 新建 `QmtBroker` 实现 `Broker` 协议，替换引擎注入 | 1 新文件 |
+| 切实盘 | 新建实现 `Broker` 协议的通道类 + 替换引擎里的一处注入 | 1 新文件 + 1 行 |
 
 ### 8.1 新策略
 
 ```python
 # quant/strategy/your_strategy.py
+import pandas as pd
+
 from ..core.abstractions import Strategy, StrategyContext
 from ..core.models import Bar
+from .registry import ParamSpec, StrategySpec, register_strategy
 
 class YourStrategy(Strategy):
     def __init__(self, param1: int = 20):
+        if param1 < 2:
+            raise ValueError("param1 须 >= 2")   # 跨参数 / 范围校验放构造函数
         self.param1 = param1
-        self.params = {"param1": param1}          # ⚠️ 类属性陷阱：实例级重新赋值
-        self.required_factors = []                # 如需因子：["momentum_20"]
+        self.params = {"param1": param1}          # 注意类属性陷阱：须在实例上重新赋值
+        self.required_factors = []               # 如需因子：["momentum_20"]
 
     def on_init(self, ctx: StrategyContext) -> None: ...
     def on_bar(self, ctx: StrategyContext, bar: Bar) -> None:
@@ -386,10 +409,26 @@ class YourStrategy(Strategy):
         if hist.rolling(self.param1).mean().iloc[-1] > hist.iloc[-1]:
             ctx.buy(bar.code)                     # 信号 → 次一 bar 开盘成交
     # on_new_day 可选重写（每交易日首根 bar，撮合后、on_bar 前）
+
+register_strategy(StrategySpec(                  # 文件尾注册 = 全部接入工作
+    name="your_strategy", cls=YourStrategy, label="你的策略",
+    params=(ParamSpec("param1", int, 20, help="参数说明"),),
+))
 ```
 
-注册两处：`cli.py` 的 `--strategy` choices + 分支构造；`server.py` 的
-`/api/backtest` 同样加 import + 分支（前端 `index.html` 的 `<select>` 加 option）。
+到此为止——`cli.py` 的 `--strategy` 选项与 `--param1` 参数、`webapp` 的策略
+下拉与参数输入框、`GET /api/strategies` 全部由注册表自动生成，**不需要改动
+任何入口代码**（strategy 包导入时自动发现同目录的全部模块）。
+
+三个补充约定：
+
+- **参数 choices**：窗口类参数若依赖参数化因子（名字即规格，如
+  `momentum_20` / `momentum_60`），用 `choices` 限定为已注册规格，把
+  "运行期 KeyError"提前到"构造期 ValueError"；
+- **K 线辅助线**：需要把均线 / 通道等画在 K 线图上时，给 StrategySpec 传
+  `overlay` 钩子（`(bars, params) -> {线名: Series}`），Web 端自动渲染；
+- **结果标题**：默认显示 `label`，需要带参数时传 `describe` 钩子
+  （`(params) -> str`，如 `f"MA{p['fast']}/{p['slow']}"`）。
 
 ### 8.2 新因子
 
@@ -439,8 +478,9 @@ class YourSource:
   加一行 + DDL 追加建表，跑 `init-schema` 幂等建表。
 - **新风控**：继承 `RiskRule` 实现 `check`（返回 None 放行，否则返回拒绝原因），
   加入 `RiskChain.rules` 链尾；或调用方通过 `BacktestEngine(risk_rules=[...])` 注入。
-- **切实盘**：实现 `Broker` 协议（`submit` + `settle`），如 miniQMT 通道的
-  `QmtBroker`；引擎与所有策略代码 0 改动（LSP 的直接兑现）。
+- **切实盘**：实现 `Broker` 协议（`submit` + `settle`）的通道类，替换
+  `BacktestEngine.__init__` 里构造撮合实现的那一处注入；策略与信号逻辑代码
+  0 改动（LSP 的兑现）。
 
 ### 8.5 扩展后验证清单
 
@@ -459,8 +499,9 @@ python -m quant.app.cli serve         # Web 端冒烟
 
 **为什么**：docstring 会被 IDE 悬浮提示、`help()`、Sphinx 等程序消费，而这些
 环境**不渲染 markdown**——`**加粗**` 会原样显示成裸 `**`，`| a | b |` 表格会
-变成一行竖线。所以源码注释统一采用 **PEP 257 摘要行 + RST
-（reStructuredText）**，也就是 Python 官方文档字符串方言。
+变成一行竖线，`` ``双反引号`` ``（RST 语法）也会带着符号一起显示。所以源码
+注释一律写**纯文本**，只保留 PEP 257 结构（摘要行 + 空行 + 详情段落）与
+RST 章节下划线。
 
 **怎么写**
 
@@ -468,28 +509,37 @@ python -m quant.app.cli serve         # Web 端冒烟
 |---|---|
 | 模块 / 类 / 函数说明 | PEP 257 docstring：首行摘要 + 空行 + 详情段落 |
 | 参数 / 返回 / 异常 | Google 风格小节：`Args:` / `Returns:` / `Raises:` |
-| 行内标识符 | RST 双反引号：`` ``sh.600519`` ``、`` ``fetch_bars`` `` |
+| 行内标识符 | 直接裸写：sh.600519、fetch_bars，不加任何包裹符号 |
 | 章节小标题 | RST 标题：文字 + 下一行 `--------` 下划线 |
 | 命令 / 用法示例 | 冒号结尾 + 空行 + 4 空格缩进代码块 |
 
-**四条禁止项**
+**五条禁止项**（均由 `tools/check_style.py` 强制，全仓已零违规）
 
 1. **不加粗**：不写 `**xxx**`。需要强调就直接陈述，或用中文「」。
 2. **不用 markdown 表格**：`| a | b |` 是 markdown 专有语法（RST 无此写法），
-   改用缩进列表 `- 项：说明`，或 RST 简单表格（`====  ====` 分列）。
+   改为逐条段落陈述（一条一行，以「；」或「。」收束）。
 3. **不用 markdown 代码块**：三个反引号围栏是 markdown 语法，改用 4 空格
    缩进代码块。
-4. **不用 emoji**：`⚠️` / `✅` / `❌` 等一律不写进源码。提示用「注意：」，
+4. **不写任何反引号**：单反引号与 `` ``双反引号`` `` 都是文档标记语法，
+   标识符一律裸写（写 sh.600519，不写带反引号包裹的形式）。
+5. **不用 emoji**：`⚠️` / `✅` / `❌` 等一律不写进源码。提示用「注意：」，
    终端输出的状态标记统一用 `✓` / `✗`（普通符号，非 emoji）。
 
-**这些不是 markdown，放心保留**：`--------` 章节下划线（RST 标准）、
-`─` `═` 分隔框线（ASCII art）、`→` 箭头（数学符号）、RST 双反引号。
+**另有一条推荐**（工具暂不强制，存量注释暂不迁移）：新写注释不用 `- 项` /
+`1. 项` 这类列表标记，改用段落散文逐句陈述——列表标记同属 markdown 语法，
+需要分层时用 RST 小标题分段。
+
+**这些不是文档标记，放心保留**：`--------` 章节下划线（RST 标准）、
+`─` `═` 分隔框线（ASCII art）、`→` 箭头（数学符号）。
 
 **自检**（提交前或有疑问时跑一次）
 
 ```bash
 python tools/check_style.py     # 全项目扫描，有违规则非零退出
 ```
+
+工具覆盖上述五条禁止项（加粗 / markdown 表格 / 代码块围栏 / 反引号 / emoji）；
+推荐项（列表标记）不在其检测范围内。
 
 **docstring 模板**
 
@@ -500,11 +550,11 @@ def fetch_bars(code: str, start: str) -> pd.DataFrame:
     摘要与详情之间空一行；详情可跨多段，段落之间也空一行。
 
     Args:
-        code: 本系统证券代码，如 ``sh.600519``。
-        start: 起始日期 ``'YYYY-MM-DD'``。
+        code: 本系统证券代码，如 sh.600519。
+        start: 起始日期 'YYYY-MM-DD'。
 
     Returns:
-        统一列 DataFrame（列定义见 ``core.abstractions.MarketDataSource``）。
+        统一列 DataFrame（列定义见 core.abstractions.MarketDataSource）。
 
     Raises:
         ValueError: 代码格式非法。
@@ -523,9 +573,12 @@ def fetch_bars(code: str, start: str) -> pd.DataFrame:
 | `test_minute` | 5 分钟频率：日界解禁每天仅一次、日内 T+1、净值按交易日 | 多频率兼容核心 |
 | `test_factor` | 因子计算正确性（手算对照）/ 预热语义（前 N 行 NaN）/ 防未来（factor_history 长度逐 bar 增长）/ 因子策略全链路 | SSOT + 防未来核心 |
 | `test_wind_source` | Wind 适配器（mock WindData，不连终端）：代码转换、组装归一、出口校验 | 适配器接缝回归（两个实测踩坑点） |
+| `test_trend` | 海龟策略：ATR/唐奇安因子手算对照、预热语义、参数校验、通道突破全链路（T+1 配对 + 金字塔上限） | 趋势跟踪 + ATR 定仓回归 |
+| `test_strategy_registry` | 策略注册表：自动发现 / 规格与默认值一致 / 字符串转型 / choices 拦截 / 未知参数报错 / overlay 钩子 | CLI 与 Web 共用构造路径（扩展机制核心） |
+| `test_cli_required_args` | CLI 必填参数：缺 --source / --factors / --strategy 时退出码 2 | 数据源 / 策略 / 因子禁止隐式默认 |
 
-另有两个需外部依赖的脚本：`baostock_test.py`（端口连通性）、`wind_test.py`
-（Wind 终端登录 + 真实拉取）。**改完任何代码都先跑一遍 smoke_test。**
+**改完任何代码都先跑一遍 smoke_test。** 需真实网络或 Wind 终端的数据源侧
+验证见 ReadMe §6.2：裸 TCP 探测端口，或直接调适配器拉一小段。
 
 ### 9.2 合成数据生成器（smoke_test 内置）
 
@@ -567,13 +620,14 @@ def fetch_bars(code: str, start: str) -> pd.DataFrame:
 - x 轴口径：K 线与买卖点散点 = `bar.dt`；净值曲线 = 交易日（每天一条）；
   基准曲线 = bar 粒度（分钟频率下与 K 线等长）。净值与基准长度不等，
   两个 chart 独立渲染、各自 x 轴自动对齐。
-- 指标卡片固定 10 张：总收益率 · 年化收益 · 最大回撤 · 夏普 · 卡玛 · 胜率 ·
-  盈亏比 · 平仓次数 · 期末权益 · 总佣金。
+- 指标卡片：字段直接取 `metrics` 的键（新增指标 = 服务端多返回一个键 + 前端
+  插一张卡），卡片数量以 `index.html` 为准，此处不写死张数与清单。
 
-**前端扩展**：新策略 → `<select>` 加 option + 后端分支；新图表 → 加容器 +
-`echarts.init()` + `render()` 内 `setOption`；新指标 → `_round_list` / `render()`
-加数据加工 + 插卡片。`index.html` 是单文件应用，仅 CDN 引入 ECharts 5.5，
-无构建工具。
+**前端扩展**：新策略 → **前端零改动**（策略下拉与参数输入框由 `/api/strategies`
+动态渲染，K 线辅助线由策略的 overlay 钩子声明、响应的 `overlays` 字段承载）；
+新图表 → 加容器 + `echarts.init()` + `render()` 内 `setOption`；新指标 →
+`_round_list` / `render()` 加数据加工 + 插卡片。`index.html` 是单文件应用，
+仅 CDN 引入 ECharts 5.5，无构建工具。
 
 ---
 

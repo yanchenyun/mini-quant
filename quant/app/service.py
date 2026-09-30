@@ -13,8 +13,7 @@ from ..data.baostock_source import BaostockSource
 from ..data.akshare_source import AkshareSource
 from ..data.wind_source import WindSource
 from ..data.mysql_repo import MySQLBarRepo
-from ..factor import FactorEngine, available as available_factors, get as get_factor
-from ..strategy.double_ma import DoubleMAStrategy
+from ..factor import FactorEngine, get as get_factor
 
 
 def get_repo(settings: Settings | None = None) -> MySQLBarRepo:
@@ -22,11 +21,12 @@ def get_repo(settings: Settings | None = None) -> MySQLBarRepo:
     return MySQLBarRepo(settings.db)
 
 
-def get_source(name: str = "baostock"):
+def get_source(name: str):
     """按名称获取数据源类（工厂方法）。
 
     返回数据源类（非实例），因其所有方法均为 @staticmethod。
-    可选：'baostock'（默认）、'akshare'、'wind'（需本机 Wind 终端）。
+    name 必传：'baostock' / 'akshare' / 'wind'（需本机 Wind 终端）。
+    不设默认数据源——数据来源决定结论口径，由调用方每次明确指定。
     """
     sources = {
         "baostock": BaostockSource,
@@ -40,11 +40,10 @@ def get_source(name: str = "baostock"):
 
 def ingest_bars(code: str, start: str, end: str | None = None,
                 adjust: str = "2", freq: str = "1d",
-                source: str = "baostock",
-                init_schema: bool = False) -> int:
+                *, source: str, init_schema: bool = False) -> int:
     """增量抓取并存入 MySQL。从库中已有最新 bar 的当日/次日续抓。
 
-    source: 数据源名称，'baostock'（默认）/ 'akshare' / 'wind'。
+    source 为必填关键字参数，'baostock' / 'akshare' / 'wind'。
     """
     repo, src = get_repo(), get_source(source)
     if init_schema:
@@ -69,30 +68,22 @@ def ingest_bars(code: str, start: str, end: str | None = None,
     return len(df)
 
 
-# v0.1 兼容别名
-def ingest_daily(code: str, start: str, end: str | None = None,
-                 adjust: str = "2", init_schema: bool = False) -> int:
-    return ingest_bars(code, start, end, adjust=adjust, freq="1d",
-                       init_schema=init_schema)
-
-
 def run_backtest(code: str, start: str, end: str | None = None,
-                 strategy: Strategy | None = None,
-                 fast: int = 5, slow: int = 20,
-                 freq: str = "1d",
+                 *, strategy: Strategy, freq: str = "1d",
                  settings: Settings | None = None) -> tuple[BacktestResult, pd.DataFrame]:
     """从 MySQL 取数 → 跑回测。返回 (结果, 行情帧) 供 CLI / Web 渲染。
 
-    freq: '1d' 日线；'5min' 5分钟线（策略写法完全一致，指标按 bar 计算）。
-    因子：strategy.required_factors 声明依赖时，自动多加载预热窗口的历史
-    即时计算（与行情同帧同口径——SSOT），再裁剪回测区间注入引擎。
+    strategy 必传（由调用方经 quant.strategy.build_strategy 构造，service
+    不感知任何具体策略）。freq: '1d' 日线；'5min' 5分钟线（策略写法完全
+    一致，指标按 bar 计算）。因子：strategy.required_factors 声明依赖时，
+    自动多加载预热窗口的历史即时计算（与行情同帧同口径——SSOT），再裁剪
+    回测区间注入引擎。
     """
     settings = settings or load_settings()
     bt: BacktestSettings = settings.backtest
 
     # end 未指定时默认今天（与 ingest 的语义一致）
     end = end or datetime.now().strftime("%Y-%m-%d")
-    strategy = strategy or DoubleMAStrategy(fast, slow)
 
     names = list(getattr(strategy, "required_factors", None) or [])
     load_start = start
@@ -131,10 +122,11 @@ def run_backtest(code: str, start: str, end: str | None = None,
 
 
 def compute_factors(code: str, start: str, end: str | None = None,
-                    freq: str = "1d", names: list[str] | None = None,
+                    freq: str = "1d", *, names: list[str],
                     init_schema: bool = False) -> int:
     """加载行情 → 计算因子 → 落库（upsert 幂等，重算即覆盖）。
 
+    names 为必填关键字参数（要算哪些因子由调用方明确指定，不隐式算全部）。
     落库是"物化缓存"：供选股/因子分析等非回测场景读取
     （回测永远内存即时计算，与行情同帧同口径）。
     """
@@ -143,7 +135,6 @@ def compute_factors(code: str, start: str, end: str | None = None,
         repo.init_schema()
 
     end = end or datetime.now().strftime("%Y-%m-%d")
-    names = names or available_factors()
     bars = repo.load_bars([code], start, end, freq=freq, adjust="2")
     if bars.empty:
         raise RuntimeError(f"无数据：{code} {start}~{end}（请先执行 ingest）")

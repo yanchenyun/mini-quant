@@ -81,6 +81,67 @@ class VolumeRatio(Factor):
         return vol.rolling(self.short).mean() / vol.rolling(self.long).mean()
 
 
+class ATR(Factor):
+    """真实波幅均值（ATR，Average True Range）——趋势跟踪的波动率刻度尺。
+
+    公式：
+    TR = max(high - low, |high - pre_close|, |low - pre_close|)
+    ATR = TR 的 window 期简单移动平均
+
+    pre_close 取收盘价 shift(1)（与前复权价自洽，避免复权跳空污染 TR）。
+    首根 bar 无昨收，TR 记 NaN 不参与均值，故 min_periods = window + 1。
+    """
+
+    def __init__(self, window: int):
+        self.window = window
+        self.name = f"atr_{window}"
+        self.min_periods = window + 1
+
+    def compute(self, bars: pd.DataFrame) -> pd.Series:
+        high = bars["high"].astype(float)
+        low = bars["low"].astype(float)
+        pc = bars["close"].astype(float).shift(1)
+        tr = pd.concat([high - low, (high - pc).abs(), (low - pc).abs()],
+                       axis=1).max(axis=1)
+        tr = tr.where(pc.notna())      # 首根 bar 无昨收 → NaN（保证预热语义准确）
+        return tr.rolling(self.window).mean()
+
+
+class DonchianHigh(Factor):
+    """唐奇安通道上轨（Donchian Channel Upper）：前 N 根 bar 的最高价。
+
+    公式：high.rolling(N).max().shift(1)
+
+    shift(1) 排除当根 bar 自身——"突破前 N 根最高价"比较的是历史区间，
+    若含当根则恒有 high >= max(high)，突破信号永不触发（也是防未来的关键）。
+    min_periods = N + 1。
+    """
+
+    def __init__(self, window: int):
+        self.window = window
+        self.name = f"donchian_high_{window}"
+        self.min_periods = window + 1
+
+    def compute(self, bars: pd.DataFrame) -> pd.Series:
+        return bars["high"].astype(float).rolling(self.window).max().shift(1)
+
+
+class DonchianLow(Factor):
+    """唐奇安通道下轨（Donchian Channel Lower）：前 N 根 bar 的最低价。
+
+    公式：low.rolling(N).min().shift(1)，与上轨同理排除当根 bar。
+    min_periods = N + 1。
+    """
+
+    def __init__(self, window: int):
+        self.window = window
+        self.name = f"donchian_low_{window}"
+        self.min_periods = window + 1
+
+    def compute(self, bars: pd.DataFrame) -> pd.Series:
+        return bars["low"].astype(float).rolling(self.window).min().shift(1)
+
+
 # ── 注册内置因子实例 ────────────────────────────────────────────────────────
 # 参数化因子直接注册多个实例，名字即规格（如 momentum_20 / momentum_60）。
 register(Momentum(20))
@@ -88,3 +149,11 @@ register(Momentum(60))
 register(Volatility(20))
 register(Bias(20))
 register(VolumeRatio(5, 20))
+
+# 通道与波动率刻度（唐奇安上下轨 + ATR）：趋势类策略的通用构件。
+# 窗口即规格——按需注册实例，策略侧再用 choices 把取值限定到已注册规格。
+register(ATR(20))
+register(DonchianHigh(20))
+register(DonchianHigh(55))
+register(DonchianLow(10))
+register(DonchianLow(20))

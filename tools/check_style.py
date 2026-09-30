@@ -1,24 +1,25 @@
-"""源码注释风格自检：检出 Python 源码注释里的 markdown 语法与 emoji。
+"""源码注释风格自检：检出 Python 源码注释里的 markdown 语法、反引号与 emoji。
 
 背景
 ----
 docstring 会被 IDE 悬浮提示、help()、Sphinx 等程序消费，而这些环境不渲染
-markdown——加粗标记会原样显示成裸符号，管道表格会变成一行竖线。因此源码
-注释统一采用 PEP 257 + RST（reStructuredText），即 Python 官方文档字符串
-方言。完整约定见 docs/DEVELOPMENT.md 第 8.6 节。
+markdown——加粗标记会原样显示成裸符号，管道表格会变成一行竖线，双反引号
+也会带着符号一起显示。因此源码注释一律写纯文本，只保留 PEP 257 结构与
+RST 章节下划线。完整约定见 docs/DEVELOPMENT.md 第 8.6 节。
 
-检出的四类违规
+检出的五类违规
 --------------
 1. markdown 加粗      两个星号包裹的强调文本
 2. markdown 表格      以管道符开头并结尾的独立行（RST 无此写法）
 3. markdown 代码块    三个反引号围栏
-4. emoji              图形化 emoji 字符（终端状态符号 ✓ 与 ✗ 除外）
+4. 反引号             单反引号与 RST 双反引号（程序消费端会原样显示符号）
+5. emoji              图形化 emoji 字符（终端状态符号 ✓ 与 ✗ 除外）
 
 实现要点
 --------
-先用 tokenize 切出注释与字符串 token，再在 token 文本上匹配规则。这样
-代码里的幂运算与字典解包天然不会被误报，且规则只作用于注释与字符串——
-正是这套约定要约束的范围。
+先用 tokenize 切出注释与文档字符串 token，再在 token 文本上匹配规则。这样
+代码里的幂运算、字典解包与 SQL 语句里的反引号天然不会被误报——规则只作用于
+注释与文档字符串，正是这套约定要约束的范围。
 
 用法
 ----
@@ -56,6 +57,9 @@ _BOLD = re.compile(
 _MD_TABLE = re.compile(r"^\s*(?:#\s*)?\|.*\|\s*$", re.M)
 # markdown 代码块：三个反引号围栏
 _MD_FENCE = re.compile(_TICK * 3)
+# 反引号：单反引号与 RST 双反引号都属文档标记语法，源码注释里一律不写。
+# 注册顺序放在围栏之后，围栏会先命中并给出更具体的规则名。
+_BACKTICK = re.compile(_TICK)
 # emoji：图形化字符；✓(U+2713) 与 ✗(U+2717) 属普通符号，刻意不在其中
 _EMOJI = re.compile(
     "["
@@ -70,17 +74,39 @@ _RULES = (
     ("markdown 加粗", _BOLD),
     ("markdown 表格", _MD_TABLE),
     ("markdown 代码块", _MD_FENCE),
+    ("反引号", _BACKTICK),
     ("emoji", _EMOJI),
 )
 
 DEFAULT_TARGETS = ("quant", "tests", "tools")
 
 
+def style_tokens(tokens):
+    """筛出需要检查的 token：注释 + 文档字符串。
+
+    文档字符串的判定标准是「作为独立表达式语句出现」——前一个有效 token 为
+    NEWLINE / INDENT / DEDENT 或位于文件首，即模块 / 类 / 函数的第一条语句。
+    数据字符串（SQL 语句、断言消息、拼接片段）因此不参与检查：它们里面的
+    反引号是 MySQL 标识符引用，属代码而非注释排版，不应被误报。
+    """
+    prev = None
+    for tok in tokens:
+        if tok.type == tokenize.COMMENT:
+            yield tok
+            continue
+        if tok.type == tokenize.STRING and prev in (None, tokenize.NEWLINE,
+                                                    tokenize.INDENT,
+                                                    tokenize.DEDENT):
+            yield tok
+        if tok.type not in (tokenize.NL, tokenize.COMMENT, tokenize.ENCODING):
+            prev = tok.type
+
+
 def scan_source(text: str) -> list[tuple[int, str, str]]:
     """扫描源码文本，返回 (行号, 规则名, 片段) 列表。
 
-    只检查注释与字符串 token——代码里的幂运算、字典解包因此不会被误报，
-    这既避免了噪音，也正好对齐规范约束的范围（注释与文档字符串）。
+    只检查注释与文档字符串 token——代码里的幂运算、字典解包、SQL 语句里的
+    反引号因此不会被误报，这既避免噪音，也正好对齐规范约束的范围。
 
     多行字符串（docstring 是一个整体 token）按行展开后再匹配，这样能报出
     精确行号，也不会因某一行已命中而漏掉同一 token 内的其它行。
@@ -88,9 +114,7 @@ def scan_source(text: str) -> list[tuple[int, str, str]]:
     hits: list[tuple[int, str, str]] = []
     try:
         stream = tokenize.generate_tokens(io.StringIO(text).readline)
-        for tok in stream:
-            if tok.type not in (tokenize.COMMENT, tokenize.STRING):
-                continue
+        for tok in style_tokens(stream):
             for offset, line in enumerate(tok.string.splitlines()):
                 for rule, pattern in _RULES:
                     if pattern.search(line):

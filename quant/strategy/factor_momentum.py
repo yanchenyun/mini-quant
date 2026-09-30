@@ -18,6 +18,7 @@ import math
 
 from ..core.abstractions import Strategy, StrategyContext
 from ..core.models import Bar
+from .registry import ParamSpec, StrategySpec, register_strategy
 
 
 class FactorMomentumStrategy(Strategy):
@@ -48,3 +49,14 @@ class FactorMomentumStrategy(Strategy):
             ctx.buy(bar.code, self.buy_ratio)
         elif v < -self.threshold and held:
             ctx.sell(bar.code, 1.0)
+
+
+# ── 注册：CLI 选项、Web 下拉与参数输入框由此自动生成 ─────────────────────────
+# window 限定为已注册动量因子的规格（名字即规格），构造期即拦截非法窗口。
+register_strategy(StrategySpec(
+    name="factor_momentum", cls=FactorMomentumStrategy, label="动量因子",
+    params=(ParamSpec("window", int, 20, choices=(20, 60),
+                      help="动量窗口（已注册规格 20/60）"),
+            ParamSpec("threshold", float, 0.0, help="信号死区阈值"),
+            ParamSpec("buy_ratio", float, 0.95, help="买入动用的现金比例")),
+    describe=lambda p: f"momentum_{p['window']}"))

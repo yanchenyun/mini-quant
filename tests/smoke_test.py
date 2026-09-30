@@ -1,6 +1,6 @@
 """离线冒烟测试：不依赖 MySQL/Baostock/Wind，用合成行情验证 引擎+策略+风控+撮合+绩效 全链路。
 
-覆盖四组场景：
+覆盖七组场景：
 1. 日线回归（v0.1 行为不变）：合成日线跑双均线，断言净值/整手/T+1；
 2. 5 分钟频率（v0.2 新能力）：合成分钟线，断言——
    a. 日界解禁每天仅一次（on_new_day 钩子按交易日触发）；
@@ -10,6 +10,12 @@
 3. 因子库（v0.3 新能力）：因子计算正确性 / 预热语义 / 防未来访问 / 因子策略全链路。
 4. Wind 适配器（v0.4 新能力）：代码格式转换 / WindData 组装 / 列归一 / 出口校验
    —— 用 mock WindData 覆盖，不连接 Wind 终端（含两个实测踩坑点的回归断言）。
+5. 海龟趋势跟踪（v0.4 新能力）：ATR / 唐奇安通道因子手算对照、预热语义、
+   参数非法校验、策略全链路（通道突破入场、吊灯止损、金字塔加仓上限）。
+6. 策略注册表：规格完整性 / 类型转型 / choices 与构造校验 / overlay 钩子
+   —— CLI 与 Web 共用的唯一构造路径，扩展机制的核心回归。
+7. CLI 必填参数：--source / --factors / --strategy 缺失时以退出码 2 结束
+   —— 数据源 / 策略 / 因子不设默认值，禁止隐式选择。
 """
 from __future__ import annotations
 
@@ -28,8 +34,11 @@ from quant.core.abstractions import Strategy, StrategyContext
 from quant.data.wind_source import (_from_wind_code, _finalize, _to_wind_code,
                                     _winddata_to_frame)
 from quant.factor import FactorEngine
+from quant.strategy import (available_strategies, build_strategy,
+                            get_strategy)
 from quant.strategy.double_ma import DoubleMAStrategy
 from quant.strategy.factor_momentum import FactorMomentumStrategy
+from quant.strategy.trend import TurtleTrendStrategy
 
 
 def make_bars(code: str = "sh.600000", days: int = 400,
@@ -260,8 +269,88 @@ def test_factor() -> None:
     print("因子库用例通过 ✓")
 
 
+def test_trend() -> None:
+    """海龟趋势跟踪：因子手算对照 + 预热语义 + 参数校验 + 策略全链路回归。"""
+    bars = make_bars()
+    names = ["atr_20", "donchian_high_20", "donchian_low_10"]
+    frame = FactorEngine.compute(bars, names)
+    assert list(frame.columns) == ["code", "dt", *names], "输出列序应为 code/dt/因子列"
+
+    high = bars["high"].to_numpy(dtype=float)
+    low = bars["low"].to_numpy(dtype=float)
+    close = bars["close"].to_numpy(dtype=float)
+    pc = np.concatenate(([np.nan], close[:-1]))
+    tr = np.nanmax(np.vstack([high - low, np.abs(high - pc), np.abs(low - pc)]), axis=0)
+    tr[0] = np.nan                              # 首根 bar 无昨收，TR 无定义
+    atr_expected = pd.Series(tr).rolling(20).mean().to_numpy()
+
+    # 1) 计算正确性：手算对照（独立于实现，覆盖牛/震荡不同区间）
+    for i in (100, 200, 300):
+        assert abs(frame["atr_20"].iloc[i] - atr_expected[i]) < 1e-9, f"ATR 不匹配 bar#{i}"
+        assert abs(frame["donchian_high_20"].iloc[i] - high[i - 20:i].max()) < 1e-9, \
+            f"上轨应等于前 20 根最高价（不含当根）bar#{i}"
+        assert abs(frame["donchian_low_10"].iloc[i] - low[i - 10:i].min()) < 1e-9, \
+            f"下轨应等于前 10 根最低价（不含当根）bar#{i}"
+
+    # 2) 预热语义：min_periods = window + 1（shift 需额外一期历史）
+    assert frame["atr_20"].iloc[:20].isna().all() and frame["atr_20"].iloc[20:].notna().all()
+    assert frame["donchian_high_20"].iloc[:20].isna().all()
+    assert frame["donchian_high_20"].iloc[20:].notna().all()
+    assert frame["donchian_low_10"].iloc[:10].isna().all()
+    assert frame["donchian_low_10"].iloc[10:].notna().all()
+
+    # 3) 参数非法校验：入场通道须长于离场通道
+    for entry, exit_ in [(10, 10), (10, 20)]:
+        try:
+            TurtleTrendStrategy(entry, exit_)
+        except ValueError:
+            continue
+        raise AssertionError(f"非法通道参数应抛 ValueError: entry={entry}, exit={exit_}")
+
+    # 4) 全链路之一：单单位口径（无加仓）→ 严格 T+1 配对断言
+    engine = BacktestEngine(
+        bars=bars, strategy=TurtleTrendStrategy(20, 10, max_units=1),
+        init_cash=1_000_000, cost=CostModel(), factor_frame=frame)
+    r = engine.run()
+    m = r.metrics
+    print("\n== 海龟趋势 20/10 单单位 ==")
+    for k in ("total_return", "annual_return", "max_drawdown", "sharpe",
+              "trade_count", "win_rate", "final_equity", "total_commission"):
+        print(f"  {k:18s} {m.get(k)}")
+    assert len(r.equity_curve) == len(bars), "净值曲线天数应等于交易日数"
+    assert m["final_equity"] > 0, "权益必须为正"
+    assert all(t["quantity"] % 100 == 0 for t in r.trades), "成交量须为100整数倍"
+    assert len(r.trades) > 0, "合成行情应产生唐奇安突破交易"
+    open_buy_day = None
+    for t in r.trades:
+        day = t["date"][:10]
+        if t["side"] == "buy":
+            open_buy_day = day
+        else:
+            assert open_buy_day is not None and day > open_buy_day, \
+                f"当日买入({open_buy_day})当日卖出({day})，违反 T+1"
+            open_buy_day = None
+
+    # 5) 全链路之二：四单位金字塔 → 单轮持仓的买入笔数不得超过 max_units
+    engine2 = BacktestEngine(
+        bars=bars, strategy=TurtleTrendStrategy(20, 10, max_units=4),
+        init_cash=1_000_000, cost=CostModel(), factor_frame=frame)
+    r2 = engine2.run()
+    assert len(r2.equity_curve) == len(bars)
+    assert r2.metrics["final_equity"] > 0
+    units = 0
+    for t in r2.trades:
+        if t["side"] == "buy":
+            units += 1
+            assert units <= 4, "单轮持仓加仓不得超过 max_units=4（金字塔上限）"
+        else:
+            units = 0
+    assert all("reason" in x for x in r2.rejects), "风控拒单须带原因"
+    print("海龟趋势跟踪用例通过 ✓")
+
+
 class FakeWindData:
-    """模拟 WindPy 的 WindData 结构：``Data`` 按字段分组（每个字段一条时间序列）。"""
+    """模拟 WindPy 的 WindData 结构：Data 按字段分组（每个字段一条时间序列）。"""
 
     def __init__(self, fields, times, data, error_code=0):
         self.ErrorCode = error_code
@@ -274,10 +363,10 @@ def test_wind_source() -> None:
     """Wind 适配器离线用例：代码转换 / 组装 / 归一 / 出口校验（不需要 Wind 终端）。
 
     回归重点（均为实测踩过的坑，对应 wind_source.py 中的注释）：
-    1. ``w.wsd`` 返回的字段名是大写（OPEN / AMT / TRADE_STATUS）；若不做
+    1. w.wsd 返回的字段名是大写（OPEN / AMT / TRADE_STATUS）；若不做
        小写归一，后续按小写字段名取列会全部落空 → 静默产出"缺行情列"的数据；
-    2. ``trade_status`` 返回的是中文描述（'交易' / '停牌'）而非数字；用
-       ``== 1`` 判断会把所有交易日误判为停牌 → 回测零成交且不报任何错；
+    2. trade_status 返回的是中文描述（'交易' / '停牌'）而非数字；用
+       == 1 判断会把所有交易日误判为停牌 → 回测零成交且不报任何错；
     3. 出口必须强校验必需列，防止上述两类问题日后再次静默通过。
     """
     # 1) 代码格式双向转换（本系统 sh.600519 <-> Wind 600519.SH）
@@ -285,6 +374,13 @@ def test_wind_source() -> None:
     assert _to_wind_code("sz.000001") == "000001.SZ"
     assert _to_wind_code("bj.430047") == "430047.BJ"
     assert _from_wind_code("600519.SH") == "sh.600519"
+
+    # 1b) 指数类代码：本系统 si.801050 <-> Wind 801050.SI；
+    # Wind 原生格式（数字在前）允许直接输入并原样通过
+    assert _to_wind_code("si.801050") == "801050.SI"
+    assert _to_wind_code("801050.SI") == "801050.SI"
+    assert _to_wind_code("801050.si") == "801050.SI"      # 后缀大小写不敏感
+    assert _from_wind_code("801050.SI") == "si.801050"
 
     # 2) 日线：按 wsd 真实形态构造（字段名大写 + trade_status 中文）
     out = FakeWindData(
@@ -336,11 +432,111 @@ def test_wind_source() -> None:
     print("Wind 适配器用例通过 ✓")
 
 
+def test_strategy_registry() -> None:
+    """策略注册表：CLI 与 Web 共用的构造路径，扩展机制的核心回归。
+
+    覆盖：自动发现（三个内置策略均已注册）/ 规格与构造默认值一致 /
+    字符串参数转型（Web 查询参数形态）/ choices 拦截未注册因子规格 /
+    未知参数显式报错 / 跨参数与范围校验走策略类构造 / overlay 钩子输出。
+    """
+    names = available_strategies()
+    assert set(names) >= {"double_ma", "factor_momentum", "turtle"}, \
+        "三个内置策略应已注册（自动发现）"
+
+    for name in names:
+        spec = get_strategy(name)
+        assert spec.label, f"{name} 缺中文显示标签"
+        strat = build_strategy(name)
+        for p in spec.params:
+            assert strat.params[p.name] == p.default, \
+                f"{name}.{p.name} 的默认值应与规格声明一致"
+
+    # 1) 字符串参数（Web 查询参数形态）应正确转型
+    s = build_strategy("turtle", {"entry": "55", "exit": "20",
+                                  "risk_pct": "0.02"})
+    assert s.entry == 55 and s.exit == 20 and abs(s.risk_pct - 0.02) < 1e-12
+
+    # 2) choices 校验：未注册因子规格的窗口应在构造期拦截
+    for strat_name, bad in [("turtle", {"entry": 30}),
+                            ("factor_momentum", {"window": 30})]:
+        try:
+            build_strategy(strat_name, bad)
+        except ValueError:
+            continue
+        raise AssertionError(f"非法取值应抛 ValueError: {strat_name} {bad}")
+
+    # 3) 未知参数：调用方拼写错误应显式报错而非静默忽略
+    try:
+        build_strategy("double_ma", {"fast": 5, "nope": 1})
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("未声明的参数应抛 ValueError")
+
+    # 4) 跨参数与范围校验走策略类 __init__（CLI 与 Web 同一条错误路径）
+    for strat_name, bad in [("double_ma", {"fast": 20, "slow": 5}),
+                            ("turtle", {"entry": 10, "exit": 20}),
+                            ("turtle", {"entry": 20, "exit": 10,
+                                        "risk_pct": 0.5})]:
+        try:
+            build_strategy(strat_name, bad)
+        except ValueError:
+            continue
+        raise AssertionError(f"非法参数应抛 ValueError: {strat_name} {bad}")
+
+    # 5) overlay 钩子：双均线应产出两条与 rolling 口径一致的均线
+    bars = make_bars()
+    spec = get_strategy("double_ma")
+    lines = spec.overlay(bars, {"fast": 5, "slow": 20})
+    assert set(lines) == {"MA5", "MA20"}
+    expected = bars["close"].astype(float).rolling(20).mean()
+    assert np.allclose(lines["MA20"].to_numpy()[25:], expected.to_numpy()[25:],
+                       equal_nan=True)
+
+    print("策略注册表用例通过 ✓")
+
+
+def test_cli_required_args() -> None:
+    """CLI 三项强制显式指定：缺 --source / --factors / --strategy 应退出。
+
+    数据源 / 策略 / 因子不设默认值——选错会静默产出错误结论。这里按
+    argparse 契约断言：缺必填参数时以退出码 2 结束（错误信息在 stderr）。
+    """
+    import contextlib
+    import io
+
+    from quant.app import cli
+
+    cases = [
+        ["ingest", "--code", "sh.600000", "--start", "2020-01-01"],
+        ["compute-factors", "--code", "sh.600000", "--start", "2024-01-01"],
+        ["backtest", "--code", "sh.600000", "--start", "2021-01-01"],
+    ]
+    saved = sys.argv
+    try:
+        for argv in cases:
+            sys.argv = ["mini-quant", *argv]
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                try:
+                    cli.main()
+                except SystemExit as e:
+                    assert e.code == 2, (argv, e.code)
+                else:
+                    raise AssertionError(f"缺少必填参数应退出: {argv}")
+            assert "--" in err.getvalue(), (argv, err.getvalue())
+    finally:
+        sys.argv = saved
+    print("CLI 必填参数用例通过 ✓")
+
+
 def main() -> None:
     test_daily()
     test_minute()
     test_factor()
+    test_trend()
     test_wind_source()
+    test_strategy_registry()
+    test_cli_required_args()
     print("\n全部断言通过 ✓")
 
 

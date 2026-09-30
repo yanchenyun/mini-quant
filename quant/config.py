@@ -41,7 +41,6 @@ class Settings:
     db: DBSettings = field(default_factory=DBSettings)
     backtest: BacktestSettings = field(default_factory=BacktestSettings)
     server: ServerSettings = field(default_factory=ServerSettings)
-    data_source: str = "baostock"
 
 
 def load_settings() -> Settings:
@@ -61,6 +60,5 @@ def load_settings() -> Settings:
         ),
         backtest=BacktestSettings(**{**BacktestSettings().__dict__, **bt}),
         server=ServerSettings(**{**ServerSettings().__dict__, **sv}),
-        data_source=raw.get("data_source", "baostock"),
     )
     return settings

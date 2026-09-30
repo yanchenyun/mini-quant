@@ -1,7 +1,7 @@
 """Baostock 数据源适配器（MarketDataSource 实现）。
 
-新增数据源（Tushare/AKShare）时：复制本文件、改 fetch_bars 内部实现即可，
-上层（仓储 / 引擎 / 策略）零改动 —— OCP。
+新增数据源时：复制本文件、改 fetch_bars 内部实现，再到服务层工厂登记一行
+（详见 data 包 docstring 的扩展方式）；上层（仓储 / 引擎 / 策略）零改动 —— OCP。
 
 适配器的职责正是"吸收数据源的脏格式"：baostock 分钟线的时间戳为 17 位纯数字串
 'YYYYMMDDHHMMSSmmm'（含 3 位毫秒），这里统一归一为 'YYYY-MM-DD HH:MM:SS'；

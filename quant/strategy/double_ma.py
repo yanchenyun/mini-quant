@@ -1,11 +1,15 @@
 """双均线策略：快线上穿慢线买入，下穿卖出（全仓）。
 
-写新策略 = 继承 Strategy + 实现两个钩子，引擎/数据/撮合零改动。
+写新策略 = 继承 Strategy + 实现两个钩子 + 文件尾注册一行，
+引擎/数据/撮合/CLI/Web 全部零改动。
 """
 from __future__ import annotations
 
+import pandas as pd
+
 from ..core.abstractions import Strategy, StrategyContext
 from ..core.models import Bar
+from .registry import ParamSpec, StrategySpec, register_strategy
 
 
 class DoubleMAStrategy(Strategy):
@@ -44,3 +48,20 @@ class DoubleMAStrategy(Strategy):
             ctx.buy(bar.code, self.buy_ratio)
         elif death and held:
             ctx.sell(bar.code, 1.0)
+
+
+def _ma_overlay(bars: pd.DataFrame, params: dict) -> dict[str, pd.Series]:
+    """K 线辅助线钩子：快慢两条均线（Web 端自动渲染）。"""
+    close = bars["close"].astype(float)
+    return {f"MA{params['fast']}": close.rolling(params["fast"]).mean(),
+            f"MA{params['slow']}": close.rolling(params["slow"]).mean()}
+
+
+# ── 注册：CLI 选项、Web 下拉与参数输入框由此自动生成 ─────────────────────────
+register_strategy(StrategySpec(
+    name="double_ma", cls=DoubleMAStrategy, label="双均线",
+    params=(ParamSpec("fast", int, 5, help="快线周期（按 bar 计）"),
+            ParamSpec("slow", int, 20, help="慢线周期"),
+            ParamSpec("buy_ratio", float, 0.95, help="买入动用的现金比例")),
+    overlay=_ma_overlay,
+    describe=lambda p: f"MA{p['fast']}/{p['slow']}"))

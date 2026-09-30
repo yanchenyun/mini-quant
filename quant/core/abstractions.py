@@ -15,7 +15,7 @@ from .models import Bar, Fill, Order, Position, Side
 
 # ── 数据面 ────────────────────────────────────────────────────────────────
 class MarketDataSource(Protocol):
-    """外部行情数据源：Baostock / Tushare / AKShare……。"""
+    """外部行情数据源契约：把任一行情接口适配成统一列 DataFrame（见 fetch_bars）。"""
     name: str
 
     def fetch_bars(self, code: str, start: str, end: str,
@@ -37,7 +37,7 @@ class MarketDataSource(Protocol):
 
 
 class DataRepository(Protocol):
-    """本地行情仓储契约。当前实现：MySQLBarRepo（freq 分表 + upsert 幂等写入）。
+    """本地行情仓储契约：按频率读写统一列行情 DataFrame，写入幂等（存在则更新）。
 
     四方法为必备契约；save_factors / load_factors 属可选能力，不计入本协议。
     """
@@ -148,7 +148,7 @@ class Strategy(ABC):
     频率无关设计：on_bar 拿到的 history 与 bar.dt 无论是日线还是 5 分钟线，
     策略代码写法完全一致（rolling 均线等指标天然按 bar 计算）。
 
-    因子用法：子类声明 required_factors = ["momentum_20", ...]，
+    因子用法：子类声明 required_factors（因子名列表，取值须来自因子注册表），
     服务层自动解析依赖并注入（见 factor 包）；on_bar 里用 ctx.factor(name) 取值。
     """
     params: dict = {}
@@ -182,7 +182,11 @@ class Strategy(ABC):
 
 # ── 执行面 ───────────────────────────────────────────────────────────────
 class Broker(Protocol):
-    """撮合/交易通道抽象。回测注入 SimBroker，实盘将来注入 QmtBroker。"""
+    """撮合 / 交易通道契约：submit 收单，settle 按当前 bar 撮合并返回成交。
+
+    本层只声明能力，不关心是回测撮合还是真实的柜面通道——引擎换一个实现
+    即可在回测与实盘之间切换（具体实现类不进入核心层）。
+    """
     def submit(self, order: Order) -> None: ...
     def settle(self, bar: Bar) -> list[Fill]:
         """以本 bar（订单提交后的次一 bar）开盘价撮合挂起的订单。"""

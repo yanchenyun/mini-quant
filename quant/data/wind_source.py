@@ -8,7 +8,9 @@ WindPy 是万得金融终端配套的 Python 接口，数据质量与覆盖度�
    不能通过 pip 安装。因此本模块对 WindPy 一律延迟导入——没装终端的
    机器照样能 import 本文件（只是调用 fetch_bars 时才抛 ImportError）。
 2. 代码格式：Wind 用 600519.SH（数字.大写交易所后缀），本系统用
-   sh.600519（小写交易所前缀.数字），需要双向转换。
+   sh.600519（小写交易所前缀.数字），需要双向转换。指数类 Wind
+   原生代码（如申万行业指数 801050.SI）允许原样输入，入口统一
+   归一为本系统格式 si.801050 后再走后续链路，保证入库口径一致。
 3. 返回结构：WindData 把结果按“字段”分组存放——单标的查询时
    .Data[i] 是第 i 个字段的时间序列（不是行记录）；时间以
    datetime.date / datetime.datetime 对象给出（不是字符串），
@@ -42,25 +44,34 @@ from .timeutil import norm_dt
 
 # 代码格式转换
 # 本系统交易所前缀（小写） -> Wind 交易所后缀（大写）
-_SUFFIX_MAP = {"sh": "SH", "sz": "SZ", "bj": "BJ"}
+# si 为 Wind 指数类代码（申万行业指数等，如 801050.SI），仅 Wind 源可用
+_SUFFIX_MAP = {"sh": "SH", "sz": "SZ", "bj": "BJ", "si": "SI"}
 
 
 def _to_wind_code(code: str) -> str:
-    """本系统 'sh.600519' → Wind '600519.SH'。
+    """证券代码 → Wind 代码，兼容两种输入形态。
+
+    本系统格式 sh.600519 转换为 600519.SH；Wind 原生格式
+    600519.SH / 801050.SI（数字在前）原样通过，后缀统一大写。
 
     Args:
-        code: 本系统证券代码，形如 sh.600519 / sz.000001 / bj.430047。
+        code: 本系统证券代码（sh.600519 / si.801050）或 Wind 原生
+            代码（600519.SH / 801050.SI）。
 
     Returns:
-        Wind 代码，形如 600519.SH。
+        Wind 代码，形如 600519.SH / 801050.SI。
 
     Raises:
-        ValueError: 代码格式非法（缺交易所前缀或未知前缀）。
+        ValueError: 代码格式非法（不含点号或前后段形态不符）。
     """
     parts = code.strip().split(".")
     if len(parts) != 2:
-        raise ValueError(f"无法识别的证券代码: {code!r}（应形如 sh.600519）")
+        raise ValueError(
+            f"无法识别的证券代码: {code!r}（应形如 sh.600519 或 801050.SI）")
     prefix, number = parts[0].lower(), parts[1]
+    if parts[0].isdigit():
+        # Wind 原生格式：数字在前（600519.SH / 801050.SI），原样通过
+        return f"{parts[0]}.{parts[1].upper()}"
     suffix = _SUFFIX_MAP.get(prefix)
     if suffix is None:
         raise ValueError(f"未知交易所前缀: {prefix!r}（支持 {list(_SUFFIX_MAP)}）")
@@ -279,7 +290,8 @@ class WindSource:
         """按频率拉取行情，返回统一列 DataFrame（与 BaostockSource 输出格式一致）。
 
         Args:
-            code: 本系统证券代码，如 sh.600519。
+            code: 本系统证券代码（sh.600519 / si.801050），也兼容 Wind
+                原生写法（600519.SH / 801050.SI）。指数类代码仅本源可用。
             start: 起始日期 'YYYY-MM-DD'。
             end: 结束日期 'YYYY-MM-DD'。
             freq: '1d' 日线；'5min'/'15min'/'30min'/'60min' 分钟线。
@@ -288,7 +300,8 @@ class WindSource:
         Returns:
             统一列 DataFrame：code/dt/trade_date/date/open/high/low/close/
             pre_close/volume/amount/trade_status/is_st/adjust_flag（附加列
-            视 Wind 字段可用性，缺失则省略）。
+            视 Wind 字段可用性，缺失则省略）。code 列恒为本系统格式
+            （传入 801050.SI 时归一为 si.801050），保证入库口径一致。
 
         Raises:
             ImportError: 本机未安装 WindPy（Wind 终端）。
@@ -296,6 +309,7 @@ class WindSource:
             RuntimeError: Wind 接口返回错误码（如代码不存在、无数据权限）。
         """
         wind_code = _to_wind_code(code)
+        code = _from_wind_code(wind_code)     # 归一为本系统格式（如 si.801050）
 
         with _wind_session() as w:
             if freq == "1d":

@@ -7,7 +7,8 @@ v0.2 起 freq 分发表读写：'1d' 走日表，'5min' 走分钟表。分钟行
 LEFT JOIN 日线表回填 pre_close / trade_status / is_st——涨跌停与停牌 ST 判定
 必须用"日线级"口径，而非上一根分钟 bar。
 
-替换存储（如 Parquet + DuckDB）时只需重写本类，其余零改动 —— DIP/OCP。
+替换存储（如 Parquet + DuckDB）只需另写一个 DataRepository 实现，再到服务层
+工厂装配处切换；本文件之外不需要改动 —— DIP/OCP。
 """
 from __future__ import annotations
 
