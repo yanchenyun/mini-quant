@@ -13,13 +13,13 @@ from .registry import ParamSpec, StrategySpec, register_strategy
 
 
 class DoubleMAStrategy(Strategy):
-    params = {"fast": 5, "slow": 20, "buy_ratio": 0.95}
 
     def __init__(self, fast: int = 5, slow: int = 20, buy_ratio: float = 0.95):
         if fast >= slow:
             raise ValueError(f"快线周期须小于慢线: fast={fast}, slow={slow}")
         self.fast, self.slow, self.buy_ratio = fast, slow, buy_ratio
         self.params = {"fast": fast, "slow": slow, "buy_ratio": buy_ratio}
+        self.required_factors = []          # 只用 history，不依赖因子
 
     def on_init(self, ctx: StrategyContext) -> None:
         pass  # 本策略无状态需要预热（均线由 history 即时计算）

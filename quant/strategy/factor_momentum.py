@@ -22,7 +22,6 @@ from .registry import ParamSpec, StrategySpec, register_strategy
 
 
 class FactorMomentumStrategy(Strategy):
-    params = {"window": 20, "threshold": 0.0, "buy_ratio": 0.95}
 
     def __init__(self, window: int = 20, threshold: float = 0.0,
                  buy_ratio: float = 0.95):

@@ -150,11 +150,13 @@ class Strategy(ABC):
 
     因子用法：子类声明 required_factors（因子名列表，取值须来自因子注册表），
     服务层自动解析依赖并注入（见 factor 包）；on_bar 里用 ctx.factor(name) 取值。
+
+    两个元数据属性 params 与 required_factors 由子类在 __init__ 里赋值，
+    基类只声明类型不给默认值：漏赋值时访问即 AttributeError（暴露问题），
+    而不是静默继承基类的可变默认对象、让所有实例共享同一份数据。
     """
-    params: dict = {}
-    required_factors: list[str] = []
-    # 注意：子类须在 __init__ 中重新赋值 params / required_factors，
-    # 否则所有实例共享同一可变对象（Python 类属性陷阱）。
+    params: dict
+    required_factors: list[str]
 
     @abstractmethod
     def on_init(self, ctx: StrategyContext) -> None: ...
@@ -193,8 +195,24 @@ class Broker(Protocol):
         ...
 
 
+class RiskContext(Protocol):
+    """责任链暴露给规则的上下文窄接口（ISP）。
+
+    绝大多数规则只需 check 的三个入参；少数要读链上日内状态的规则
+    （如 T+1 委托防重）通过本接口取值，而不是直接持有整条链。
+    """
+    def pending_sell(self, code: str) -> int: ...
+
+
 class RiskRule(ABC):
-    """风控规则：责任链上的一个节点。返回 None 放行，否则返回拒绝原因。"""
+    """风控规则：责任链上的一个节点。返回 None 放行，否则返回拒绝原因。
+
+    需要链上下文的规则重写 attach 保存它；不需要的沿用默认空实现，
+    链在装配时统一调用 attach，规则侧不依赖任何试探性判断。
+    """
+    def attach(self, ctx: RiskContext) -> None:
+        """由责任链在装配时调用（可选重写，默认不关心上下文）。"""
+
     @abstractmethod
     def check(self, order: Order, portfolio: PortfolioView, bar: Bar) -> str | None: ...
 

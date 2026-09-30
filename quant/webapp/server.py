@@ -15,6 +15,7 @@ from fastapi.responses import FileResponse
 
 from .. import __version__
 from ..app.service import get_repo, run_backtest
+from ..data.registry import available_freqs
 from ..strategy import available_strategies, build_strategy, get_strategy
 
 WEB_DIR = Path(__file__).resolve().parent
@@ -67,7 +68,8 @@ def backtest(request: Request) -> dict[str, Any]:
     q = request.query_params
     code, start = q.get("code"), q.get("start")
     end = q.get("end")
-    freq = q.get("freq", "1d")
+    freqs = available_freqs()
+    freq = q.get("freq", freqs[0])
     strategy = q.get("strategy")
 
     if not code or not start:
@@ -75,8 +77,8 @@ def backtest(request: Request) -> dict[str, Any]:
     if not strategy:
         raise HTTPException(400,
                             f"strategy 必填（可选值: {available_strategies()}）")
-    if freq not in ("1d", "5min"):
-        raise HTTPException(400, "freq 仅支持 1d / 5min")
+    if freq not in freqs:
+        raise HTTPException(400, f"freq 仅支持 {' / '.join(freqs)}")
     try:
         spec = get_strategy(strategy)
     except KeyError as e:

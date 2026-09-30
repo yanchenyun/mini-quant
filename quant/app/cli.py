@@ -15,6 +15,8 @@
 
 --strategy 的可选项与各策略参数均由策略注册表动态生成：新增策略在
 quant/strategy/ 下自注册即可，本文件零改动。
+--source 与 --freq 的可选项由数据层的注册表动态生成（见 data/registry.py）：
+新增数据源或频率在那边登记，本文件同样无需改动。
 """
 from __future__ import annotations
 
@@ -22,9 +24,16 @@ import argparse
 import json
 
 from ..app.service import compute_factors, ingest_bars, run_backtest
+from ..data.registry import (available_freqs, available_sources, freq_help,
+                             source_help)
 from ..factor import available as available_factors
 from ..strategy import (available_strategies, build_strategy,
                         get_strategy)
+
+# 频率选项：取值来自数据层注册表；默认取注册表首项（当前为日线）
+_FREQS = available_freqs()
+_FREQ_KW = {"default": _FREQS[0], "choices": _FREQS,
+            "help": f"{freq_help()}（默认 {_FREQS[0]}）"}
 
 
 def _add_strategy_args(parser: argparse.ArgumentParser) -> None:
@@ -50,7 +59,13 @@ def _add_strategy_args(parser: argparse.ArgumentParser) -> None:
                                 help=f"（{spec.label}）{p.help}".replace("%", "%%"))
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
+    """构造命令行解析器。
+
+    与 main 拆开是为了可测与可复用：调用方（含冒烟测试）可以只拿解析器
+    检查选项与 choices，而不执行任何业务动作。三个可变清单（策略参数、
+    数据源、频率）全部在此从各自注册表派生。
+    """
     parser = argparse.ArgumentParser(prog="mini-quant", description="简易量化平台")
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -62,19 +77,17 @@ def main() -> None:
     p_in.add_argument("--end", default=None, help="结束日期，默认今天")
     p_in.add_argument("--adjust", default="2", choices=["1", "2", "3"],
                       help="复权：1后复权 2前复权 3不复权，默认2")
-    p_in.add_argument("--freq", default="1d", choices=["1d", "5min"],
-                      help="频率：1d 日线 5min 5分钟线，默认1d")
+    p_in.add_argument("--freq", **_FREQ_KW)
     p_in.add_argument("--source", required=True,
-                      choices=["baostock", "akshare", "wind"],
-                      help="数据源（必填）：baostock 免费稳定 / akshare 免费聚合多源"
-                           "/ wind 需本机安装并登录 Wind 终端")
+                      choices=available_sources(),
+                      help=f"数据源（必填）：{source_help()}")
 
     p_cf = sub.add_parser("compute-factors",
                           help="计算因子并存入 MySQL（幂等 upsert；因子必填）")
     p_cf.add_argument("--code", required=True)
     p_cf.add_argument("--start", required=True)
     p_cf.add_argument("--end", default=None, help="结束日期，默认今天")
-    p_cf.add_argument("--freq", default="1d", choices=["1d", "5min"])
+    p_cf.add_argument("--freq", **_FREQ_KW)
     p_cf.add_argument("--factors", required=True,
                       help=f"因子名（必填，逗号分隔），可选: {','.join(available_factors())}")
 
@@ -82,8 +95,7 @@ def main() -> None:
     p_bt.add_argument("--code", required=True)
     p_bt.add_argument("--start", required=True)
     p_bt.add_argument("--end", default=None)
-    p_bt.add_argument("--freq", default="1d", choices=["1d", "5min"],
-                      help="频率：1d 日线 5min 5分钟线，默认1d")
+    p_bt.add_argument("--freq", **_FREQ_KW)
     _add_strategy_args(p_bt)
     p_bt.add_argument("--json", action="store_true", help="输出完整 JSON")
 
@@ -93,7 +105,11 @@ def main() -> None:
 
     sub.add_parser("repair-dt", help="修复分钟表历史脏时间戳（17位数字串→标准格式，幂等）")
 
-    args = parser.parse_args()
+    return parser
+
+
+def main() -> None:
+    args = build_parser().parse_args()
 
     if args.command == "init-schema":
         from ..app.service import get_repo

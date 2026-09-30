@@ -23,11 +23,23 @@ class Portfolio:
         return self.positions.get(code)
 
     def equity(self, prices: dict[str, float]) -> float:
-        mv = sum(
-            pos.quantity * prices.get(pos.code, pos.avg_cost)
+        """当前总权益 = 现金 + 持仓市值。"""
+        return self.cash + self._market_value(prices)
+
+    def _market_value(self, prices: dict[str, float],
+                      last_prices: dict[str, float] | None = None) -> float:
+        """持仓市值合计。取价三级兜底：当日价 → 历史最近价 → 买入均价。
+
+        当日无该标的 bar（停牌）时 prices 缺该 code，此时依次退到
+        last_prices 与 avg_cost。若不传 last_prices，退化为二级兜底
+        （当日价 → 买入均价），与实时查询口径一致。
+        """
+        last_prices = last_prices or {}
+        return sum(
+            pos.quantity * prices.get(
+                pos.code, last_prices.get(pos.code, pos.avg_cost))
             for pos in self.positions.values()
         )
-        return self.cash + mv
 
     # ── 记账 ─────────────────────────────────────────────
     def on_new_day(self) -> None:
@@ -87,12 +99,7 @@ class Portfolio:
                 不会有该 code，此时优先用 last_prices，最后才退到 avg_cost——
                 避免"一字跌停日的停牌股估值仍按买入均价"的高估偏差）。
         """
-        last_prices = last_prices or {}
-        mv = sum(
-            pos.quantity * prices.get(
-                pos.code, last_prices.get(pos.code, pos.avg_cost))
-            for pos in self.positions.values()
-        )
+        mv = self._market_value(prices, last_prices)
         self.equity_curve.append({
             "date": date,
             "cash": round(self.cash, 2),

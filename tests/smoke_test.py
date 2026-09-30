@@ -1,6 +1,6 @@
 """离线冒烟测试：不依赖 MySQL/Baostock/Wind，用合成行情验证 引擎+策略+风控+撮合+绩效 全链路。
 
-覆盖七组场景：
+覆盖十组场景：
 1. 日线回归（v0.1 行为不变）：合成日线跑双均线，断言净值/整手/T+1；
 2. 5 分钟频率（v0.2 新能力）：合成分钟线，断言——
    a. 日界解禁每天仅一次（on_new_day 钩子按交易日触发）；
@@ -16,6 +16,12 @@
    —— CLI 与 Web 共用的唯一构造路径，扩展机制的核心回归。
 7. CLI 必填参数：--source / --factors / --strategy 缺失时以退出码 2 结束
    —— 数据源 / 策略 / 因子不设默认值，禁止隐式选择。
+8. 通道注入：引擎 broker 参数接受任一 Broker 实现，注入实现被真正调用
+   —— LSP 的直接兑现（换实盘通道不改主循环）。
+9. 风控链与策略元数据：空规则列表表示不做风控（不被默认集吞掉）、
+   需要链上下文的规则在装配时显式挂载、策略元数据漏赋值即报错。
+10. 数据源 / 频率注册表：两份清单单一来源，CLI 选项、Web 校验与仓储
+   表名映射同源派生，未知取值显式报错。
 """
 from __future__ import annotations
 
@@ -29,8 +35,12 @@ import pandas as pd
 sys.path.insert(0, ".")
 
 from quant.backtest.engine import BacktestEngine
-from quant.backtest.sim_broker import CostModel
+from quant.backtest.sim_broker import CostModel, SimBroker
 from quant.core.abstractions import Strategy, StrategyContext
+from quant.core.models import Bar, Order, Position, Side
+from quant.core.portfolio import Portfolio
+from quant.data import registry
+from quant.data.mysql_repo import TABLES
 from quant.data.wind_source import (_from_wind_code, _finalize, _to_wind_code,
                                     _winddata_to_frame)
 from quant.factor import FactorEngine
@@ -98,6 +108,8 @@ class IntradayT1Probe(Strategy):
         self.bought = False
         self.new_day_events: list[str] = []
         self.sell_attempt_days: list[str] = []   # 每次"想卖"的归属交易日
+        self.params: dict = {}                   # 基类不给默认值，子类须显式声明
+        self.required_factors: list[str] = []
 
     def on_init(self, ctx: StrategyContext) -> None:
         pass
@@ -202,6 +214,7 @@ class FactorProbe(Strategy):
     用于验证防未来访问（值与全量因果计算逐点一致，长度随 bar 增长）。"""
 
     def __init__(self):
+        self.params: dict = {}
         self.required_factors = ["momentum_20"]
         self.snapshots: list[tuple[str, float, int]] = []
 
@@ -529,6 +542,153 @@ def test_cli_required_args() -> None:
     print("CLI 必填参数用例通过 ✓")
 
 
+class DummyBroker:
+    """注入用假通道：只记录调用、不产生成交（用于验证引擎用的是注入实现）。"""
+
+    def __init__(self):
+        self.submitted: list[Order] = []
+        self.settle_calls = 0
+
+    def submit(self, order: Order) -> None:
+        self.submitted.append(order)
+
+    def settle(self, bar: Bar) -> list:
+        self.settle_calls += 1
+        return []
+
+
+def test_broker_injection() -> None:
+    """引擎通道可注入：注入的实现被真正使用，主循环与策略零改动（LSP）。"""
+    bars = make_bars()
+    dummy = DummyBroker()
+    engine = BacktestEngine(bars=bars, strategy=DoubleMAStrategy(5, 20),
+                            init_cash=1_000_000, cost=CostModel(), broker=dummy)
+    assert engine.broker is dummy, "引擎应直接使用注入的通道"
+    r = engine.run()
+    assert dummy.settle_calls == len(bars), \
+        f"每根 bar 都应向注入通道请求撮合（{len(bars)}），实际 {dummy.settle_calls}"
+    assert dummy.submitted, "策略订单应提交到注入通道"
+    assert r.trades == [], "假通道不成交，成交记录应为空"
+    assert r.metrics["trade_count"] == 0
+
+    # 不注入时仍装配内置回测撮合（默认行为不变）
+    default_engine = BacktestEngine(bars=bars, strategy=DoubleMAStrategy(5, 20))
+    assert type(default_engine.broker) is SimBroker, "缺省应装配内置 SimBroker"
+    print("通道注入用例通过 ✓")
+
+
+def test_risk_chain() -> None:
+    """风控链：空规则语义 / 显式挂载 / 策略元数据的严格契约。"""
+    from quant.backtest.risk import AvailabilityRule, RiskChain
+
+    # 1) 空列表表示"不做风控"，不再被 or 吞掉换成默认规则集
+    assert len(RiskChain().rules) == 4, "缺省应装配默认规则集"
+    assert RiskChain([]).rules == [], "空列表应表示无规则"
+
+    # 2) 需要链上下文的规则在装配时显式收到上下文（不再靠 hasattr 试探）
+    chain = RiskChain()
+    rule = [r for r in chain.rules if isinstance(r, AvailabilityRule)][0]
+    assert rule._ctx is chain, "AvailabilityRule 应在装配时挂载到链上"
+
+    pf = Portfolio(init_cash=1_000_000)
+    pf.positions["sh.600000"] = Position(code="sh.600000", quantity=100,
+                                         available=100, avg_cost=10.0)
+    bar = Bar(code="sh.600000", dt="2024-01-02", trade_date="2024-01-02",
+              open=10.0, high=10.0, low=10.0, close=10.0)
+    sell = Order(code="sh.600000", side=Side.SELL, quantity=100)
+
+    # 3) 未挂载就单独调用 → 显式报错（而不是在 None 上取属性崩掉）
+    try:
+        AvailabilityRule().check(sell, pf, bar)
+    except RuntimeError as e:
+        assert "未挂载" in str(e), e
+    else:
+        raise AssertionError("未挂载的规则应抛 RuntimeError")
+    assert rule.check(sell, pf, bar) is None, "可卖足额应放行"
+
+    # 4) 策略元数据由子类在 __init__ 显式赋值：基类不留可变默认，漏写即报错
+    assert not hasattr(Strategy, "params"), "基类不应带类级 params 默认值"
+    assert not hasattr(Strategy, "required_factors"), "基类不应带类级因子默认值"
+
+    class Forgetful(Strategy):
+        def on_init(self, ctx) -> None:
+            pass
+
+        def on_bar(self, ctx, bar) -> None:
+            pass
+
+    forgetful = Forgetful()
+    for attr in ("params", "required_factors"):
+        try:
+            getattr(forgetful, attr)
+        except AttributeError:
+            continue
+        raise AssertionError(f"子类漏写 {attr} 时应抛 AttributeError")
+    print("风控链与策略元数据用例通过 ✓")
+
+
+def test_data_registry() -> None:
+    """数据源 / 频率清单单一来源：CLI 选项、Web 校验与仓储表名同源派生。"""
+    import contextlib
+    import io
+
+    from fastapi import HTTPException
+
+    from quant.app.cli import build_parser
+    from quant.webapp.server import backtest as backtest_endpoint
+
+    sources, freqs = registry.available_sources(), registry.available_freqs()
+    assert sources == ["baostock", "akshare", "wind"], sources
+    assert freqs[0] == "1d" and "5min" in freqs, freqs
+
+    # 1) 仓储表名映射由注册表派生（不再是第二份清单）
+    assert TABLES == registry.freq_tables(), "仓储表名应与注册表同源"
+    for f in registry.FREQS:
+        assert registry.get_freq(f.name).table == f.table
+
+    # 2) CLI 的 choices 由注册表派生：非法取值时 argparse 列出全部合法值
+    parser = build_parser()
+    cases = ((["ingest", "--code", "sh.600000", "--start", "2020-01-01",
+               "--source", "nope"], sources),
+             (["backtest", "--code", "sh.600000", "--start", "2020-01-01",
+               "--strategy", "double_ma", "--freq", "3min"], freqs))
+    for argv, expected in cases:
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            try:
+                parser.parse_args(argv)
+            except SystemExit:
+                pass
+        msg = err.getvalue()
+        assert "invalid choice" in msg, msg
+        for name in expected:
+            assert name in msg, f"错误提示应列出注册表取值 {name}: {msg}"
+
+    # 3) Web 端点的频率校验与注册表同源
+    class FakeRequest:
+        def __init__(self, q: dict):
+            self.query_params = q
+
+    try:
+        backtest_endpoint(FakeRequest({"code": "sh.600000", "start": "2020-01-01",
+                                       "strategy": "double_ma", "freq": "3min"}))
+    except HTTPException as e:
+        assert e.status_code == 400, e
+        assert "1d" in str(e.detail) and "5min" in str(e.detail), e.detail
+    else:
+        raise AssertionError("非法 freq 应返回 400")
+
+    # 4) 未知数据源 / 频率在注册表层显式报错并列出可选值
+    for bad, fn in (("nope", registry.get_source), ("3min", registry.get_freq)):
+        try:
+            fn(bad)
+        except ValueError as e:
+            assert bad in str(e), e
+        else:
+            raise AssertionError(f"{bad} 应抛 ValueError")
+    print("数据源/频率注册表用例通过 ✓")
+
+
 def main() -> None:
     test_daily()
     test_minute()
@@ -537,6 +697,9 @@ def main() -> None:
     test_wind_source()
     test_strategy_registry()
     test_cli_required_args()
+    test_broker_injection()
+    test_risk_chain()
+    test_data_registry()
     print("\n全部断言通过 ✓")
 
 

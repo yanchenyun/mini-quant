@@ -21,17 +21,25 @@ amount/trade_status/is_st）；对下吸收各数据源 / 存储的脏格式（�
                   upsert 幂等写入；分钟读取 LEFT JOIN 日线表回填
                   pre_close / trade_status / is_st（涨跌停基准 = 日线昨收）。
                   另含因子长表 dwd_factor_value_i 读写。
+- registry         数据源与频率注册表（本层清单的单一事实来源）：数据源条目
+                  存"模块名 + 类名"以便延迟导入（不把各家的第三方依赖绑到
+                  本层），频率条目带行情表名。CLI 选项、服务层工厂与 Web 校验
+                  全部由此派生，见模块内 docstring 的扩展说明。
 - timeutil         时间戳归一工具 norm_dt：识别 17 位毫秒串 / 14 位 /
                   8 位 / 无空格 等 5 种脏形态，统一归一为
                   YYYY-MM-DD HH:MM:SS（毫秒丢弃）。
 
 扩展方式
 --------
-- 新数据源 = 新增一个 MarketDataSource 实现（一个文件），再到服务层工厂
-  app/service.get_source 登记一行、cli.py 的 --source choices 加一项
-  （当前是两处清单，尚未做成注册表）。适配器之间互不影响。
-- 换存储 = 重写 DataRepository 实现（一个文件），再到 app/service.get_repo
-  装配处换一行。
+新数据源 = 新增一个适配器文件（实现 MarketDataSource 契约），再到 registry
+的 SOURCES 里加一行。CLI 的 --source 选项、服务层工厂与 Web 侧校验全部由
+该清单派生，入口代码零改动；适配器之间互不影响。
+
+换存储 = 重写一个 DataRepository 实现（一个文件），再到 app/service.get_repo
+装配处换一行。
+
+新频率 = 在 registry 的 FREQS 里加一行（表名随之进入仓储的表名映射），另需
+补齐仓储的读写分派与建表 DDL——不同频率的列口径与取数 SQL 本就不同。
 
 参见
 ----

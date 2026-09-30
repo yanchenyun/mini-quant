@@ -1,8 +1,9 @@
 """事件驱动回测引擎：数据逐 bar 推进，订单次一 bar 开盘成交。
 
-同一套引擎 + SimBroker 即回测，将来换 LiveFeed + QmtBroker 即实盘（LSP）。
-主循环按 trade_date 分组，保证 T+1 / 日始钩子的“日”语义在分钟频率下依然正确。
-策略可见的 history 索引为 bar.dt，指标计算与频率无关。
+同一套引擎 + 默认 SimBroker 即回测；换实盘通道只需注入另一个 Broker 实现，
+主循环与策略代码零改动（LSP）。主循环按 trade_date 分组，保证 T+1 / 日始
+钩子的“日”语义在分钟频率下依然正确。策略可见的 history 索引为 bar.dt，
+指标计算与频率无关。
 """
 from __future__ import annotations
 
@@ -12,8 +13,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from ..core.abstractions import (FactorAccessor, PortfolioView, RiskRule,
-                                 Strategy, StrategyContext)
+from ..core.abstractions import (Broker, FactorAccessor, PortfolioView,
+                                 RiskRule, Strategy, StrategyContext)
 from ..core.models import Bar, Order
 from ..core.portfolio import Portfolio
 from .metrics import compute_metrics
@@ -36,24 +37,28 @@ class BacktestEngine:
                  cost: CostModel | None = None,
                  risk_rules: list[RiskRule] | None = None,
                  periods_per_year: int = 252,
-                 factor_frame: pd.DataFrame | None = None):
+                 factor_frame: pd.DataFrame | None = None,
+                 broker: Broker | None = None):
         """
         Args:
             bars: 统一列行情 DataFrame（至少含 code/dt/open/high/low/close）。
             strategy: 策略实例（实现 on_init / on_bar 钩子）。
             init_cash: 初始资金（默认 100 万）。
             cost: 成本模型（佣金/印花税/滑点），默认 CostModel()。
-            risk_rules: 风控规则列表，默认内置四道规则。
+            risk_rules: 风控规则列表；None 用内置默认规则集，空列表表示不做风控。
             periods_per_year: 年化基准（默认 252 个交易日）。
             factor_frame: 因子宽表 [code, dt, <因子列…>]，由 FactorEngine.compute
                 产出、服务层按 strategy.required_factors 自动注入。策略通过
                 ctx.factor(name) 只读访问——引擎按 bar 进度 iloc[:n] 切片，
                 结构上杜绝未来数据。
+            broker: 撮合通道（实现 Broker 协议）；None 时用内置回测撮合
+                SimBroker。换实盘通道只需注入一个实现类，引擎主循环零改动。
         """
         self.strategy = strategy
         self.init_cash = init_cash
         self.cost = cost or CostModel()
-        self.broker = SimBroker(self.cost)
+        self.broker: Broker = (broker if broker is not None
+                               else SimBroker(self.cost))
         self.risk = RiskChain(risk_rules, cost=self.cost)
         # 净值按交易日快照，故年化基准默认 252；如改按 bar 快照可传
         # periods_per_year=252*48（5分钟）等
@@ -62,9 +67,8 @@ class BacktestEngine:
         self.portfolio = Portfolio(init_cash=init_cash)
         self.bars = self._normalize(bars)
         self._factor_dfs = self._attach_factors(factor_frame)
-        # 预构建每标的收盘价/时间戳数组（消除主循环中逐 bar 构造 pd.Series 的 O(n²) 开销）
+        # 预构建每标的收盘价数组（消除主循环中逐 bar 构造 pd.Series 的 O(n²) 开销）
         self._full_prices: dict[str, np.ndarray] = {}
-        self._full_dts: dict[str, np.ndarray] = {}
         self._history: dict[str, tuple[np.ndarray, np.ndarray, int]] = {}  # code → (prices, dts, count)
         self._prices: dict[str, float] = {}        # code → 当日最新收盘价（用于净值计算）
         self._last_close: dict[str, float] = {}    # code → 历史最近 close（停牌日估值兜底，避免用 avg_cost 高估）
@@ -142,12 +146,10 @@ class BacktestEngine:
     # ── 主循环：按交易日分组驱动日界，一天内按 dt 逐 bar 推进 ────────
     def run(self) -> BacktestResult:
         self._today_bar = {}
-        # 预构建每标的完整价格/时间数组（O(N) 一次性，N = 该标的总 bar 数）
-        self._full_prices, self._full_dts = {}, {}
+        # 预构建每标的完整收盘价数组（O(N) 一次性，N = 该标的总 bar 数）
+        self._full_prices = {}
         for code, sub in self.bars.groupby("code", sort=False):
-            arr = sub[["close", "dt"]].to_numpy()
-            self._full_prices[code] = arr[:, 0].astype(float)
-            self._full_dts[code] = arr[:, 1].astype(str)
+            self._full_prices[code] = sub["close"].to_numpy(dtype=float)
         self._history = {}  # code → (prices, dts, count)
 
         self.strategy.on_init(StrategyContext(

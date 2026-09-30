@@ -65,8 +65,8 @@
 | 原则 | 落地方式 |
 |---|---|
 | **S** 单一职责 | core(契约)/data(取数)/backtest(撮合)/strategy(信号)/factor(计算)/webapp(展示) 各司其职 |
-| **O** 开闭 | 新策略 / 新因子 = 新增实现 + 注册一行，改 0 行旧代码；新数据源 / 新风控 / 新频率同理，另需在工厂、责任链或频率表处登记一处 |
-| **L** 里氏替换 | 撮合通道实现同一 `Broker` 协议即可互换：换通道只改引擎的一处注入，策略与信号代码 0 修改 |
+| **O** 开闭 | 新策略 / 新因子 / 新数据源 = 新增实现 + 在各自的注册表登记一行，入口代码 0 改动；新风控 = 1 个子类 + 责任链装配一处；新频率另需补齐仓储读写分派与建表 DDL（各频率列口径本就不同） |
+| **L** 里氏替换 | 换撮合通道只需实现同一 `Broker` 协议并经引擎 broker 参数注入：主循环与策略代码 0 修改（`SimBroker` 只是缺省实现） |
 | **I** 接口隔离 | 策略只见 `StrategyContext` 窄接口（history 只到当前 bar） |
 | **D** 依赖倒置 | 引擎 / 策略依赖 core 抽象；MySQL / Baostock / AKShare / Wind 都是可替换插件 |
 
@@ -88,6 +88,8 @@ mini-quant/
 │   │   │                   Factor / FactorAccessor / Broker / RiskRule 等
 │   │   └── portfolio.py    记账本：现金 / 持仓 / 净值曲线（T+1、含费摊薄成本）
 │   ├── data/            数据层（core 抽象的实现）
+│   │   ├── registry.py        数据源与频率注册表（本层清单单一来源：
+│   │   │                     数据源延迟导入、频率带行情表名）
 │   │   ├── baostock_source.py  Baostock 适配器（1d/5/15/30/60min）
 │   │   ├── akshare_source.py   AKShare 适配器（免费聚合多源，分钟分段请求）
 │   │   ├── wind_source.py      Wind 适配器（需本机 Wind 终端；延迟导入 + 字段降级）
@@ -129,14 +131,15 @@ mini-quant/
 | `core/models.py` | 全系统值对象（不可变 dataclass） | `Bar.dt` + `Bar.trade_date` 双字段是多频率兼容的命门；`Position.available` 实现 T+1 |
 | `core/abstractions.py` | 接口契约（"宪法"） | Protocol（鸭子类型）与 ABC（需继承）混用；`Strategy.required_factors` 声明因子依赖 |
 | `core/portfolio.py` | 记账本 | `apply_fill` 更新现金/持仓并结算盈亏；买入现金不足返回 False（防现金变负）；`snapshot` 停牌日用最近收盘价估值 |
+| `data/registry.py` | 数据源与频率注册表 | 清单单一来源；数据源存"模块名 + 类名"以便延迟导入（不把各家第三方依赖绑到数据层）；频率条目带行情表名 |
 | `data/*_source.py` | 数据源适配器（Adapter） | 吸收各源脏格式，对上输出统一列 DataFrame（见 §3.1） |
 | `data/mysql_repo.py` | 仓储（Repository） | freq 分表 + upsert 幂等；分钟读取 LEFT JOIN 日线表回填涨跌停基准 |
 | `factor/base.py` | 因子注册表 | `register/get/available`；新因子 = 一个子类 + 一行注册 |
 | `factor/engine.py` | FactorEngine 纯计算 | 行情宽表 → 因子宽表 `[code, dt, <因子列…>]`；因子名与行情列冲突显式报错 |
 | `strategy/registry.py` | 策略注册表 | `ParamSpec` / `StrategySpec` / `build_strategy`；CLI 选项、Web 下拉与参数输入框、K 线辅助线全部由此驱动 |
-| `backtest/engine.py` | 事件驱动引擎 | 按 `trade_date` 分组驱动日界；预构建 numpy 数组消除 O(n²)；`submit` 时序异常记 rejects 不静默吞单 |
-| `backtest/sim_broker.py` | 模拟撮合 | 信号次一 bar 开盘价成交；一字板拒单；限价单触及成交；挂单 TTL 默认 1（当日有效） |
-| `backtest/risk.py` | 风控责任链 | 顺序即优先级；`_pending_sell` 同日卖出防重 |
+| `backtest/engine.py` | 事件驱动引擎 | 按 `trade_date` 分组驱动日界；预构建 numpy 数组消除 O(n²)；`submit` 时序异常记 rejects 不静默吞单；撮合通道经 broker 参数注入 |
+| `backtest/sim_broker.py` | 模拟撮合（缺省通道） | 信号次一 bar 开盘价成交；一字板拒单；限价单触及成交；挂单 TTL 默认 1（当日有效） |
+| `backtest/risk.py` | 风控责任链 | 顺序即优先级；`_pending_sell` 同日卖出防重；`rules=None` 用默认集、`[]` 表示无规则 |
 | `backtest/metrics.py` | 绩效纯函数 | 全部由净值曲线 + 成交记录推导；`periods_per_year` 参数化 |
 | `app/service.py` | 服务层 | CLI 与 Web 共用装配地；因子依赖解析 + 预热加载 |
 | `webapp/server.py` | Web 后端 | 只调 service；基准曲线按 bar 粒度生成与 K 线 x 轴等长 |
@@ -314,7 +317,7 @@ cli.py main() 解析参数
 |---|---|---|---|
 | `code` / `start` | str | ✅必填 | 证券代码 / 起始日期 |
 | `end` | str | 今天 | 结束日期 |
-| `freq` | str | `1d` | `1d` / `5min` |
+| `freq` | str | 注册表首项 | 频率名（可选值与默认值均来自 `data.registry` 的频率注册表） |
 | `strategy` | str | ✅必填 | 策略名（可选值 = 注册表全部策略；不设默认，避免静默跑错策略） |
 | `--`（其余） | 随策略 | 规格默认值 | 所选策略的参数（名称 / 类型 / choices 见 `/api/strategies`） |
 
@@ -332,8 +335,9 @@ choices 内、策略类构造校验不通过（如 `fast >= slow`）→ `400`；
 新写脚本时优先复用这一层：
 
 ```python
-from quant.app.service import (get_repo, get_source, ingest_bars,
+from quant.app.service import (get_repo, ingest_bars,
                                 compute_factors, run_backtest)
+from quant.data.registry import get_source
 from quant.strategy import build_strategy
 
 repo = get_repo()                          # 仓储工厂 → MySQLBarRepo
@@ -367,9 +371,9 @@ result, bars = run_backtest(               # 取数 → 跑回测，返回 (结�
 
 ## 8. 扩展指南
 
-> OCP 的兑现清单。策略与因子的扩展**不修改任何旧代码**（新增文件 / 追加一行
-> 注册即可）；数据源、频率、风控、存储等扩展点的改动量见下表，其中数据源与
-> 频率目前仍是「一处实现 + 一两处清单」的手工登记。
+> OCP 的兑现清单。策略、因子与数据源三类常见扩展**不修改任何入口代码**（新增
+> 文件 + 在各自注册表登记一行即可）；风控、频率、存储等扩展点的改动量见下表
+> ——它们各自都含无法由清单取代的实质工作（订单流、取数 SQL、连接管理）。
 
 ### 8.0 扩展点速查
 
@@ -377,11 +381,11 @@ result, bars = run_backtest(               # 取数 → 跑回测，返回 (结�
 |---|---|---|
 | 新策略 | `quant/strategy/<新文件>.py`（策略类 + 文件尾自注册） | 1 新文件；CLI / Web / 前端自动发现，0 处入口改动 |
 | 新因子 | `quant/factor/builtin.py` 追加类 + register | 1 类 + 1 行 |
-| 新数据源 | `quant/data/<新源>.py` + `service.get_source` + `cli.py` choices | 1 新文件 + 2 行 |
+| 新数据源 | `quant/data/<新源>.py` + `data/registry.py` 的 SOURCES 加一行 | 1 新文件 + 1 行；CLI / 服务层工厂 / Web 校验自动跟随 |
 | 换存储 | 重写 `DataRepository` 实现 + `service.get_repo` | 1 文件 + 1 行 |
-| 新频率 | `baostock_source._FREQ_MAP` + `mysql_repo.TABLES` + DDL | 2 行 + DDL |
-| 新风控 | `risk.py` 追加子类 + `RiskChain.__init__` | 1 类 + 1 行 |
-| 切实盘 | 新建实现 `Broker` 协议的通道类 + 替换引擎里的一处注入 | 1 新文件 + 1 行 |
+| 新频率 | `data/registry.py` 的 FREQS 加一行 + 适配器频率映射 + 仓储读写分派 + DDL | 1 行 + 2 处分派 + DDL |
+| 新风控 | `risk.py` 追加子类 + 加入 `RiskChain` 默认规则集 | 1 类 + 1 行 |
+| 切实盘 | 新建实现 `Broker` 协议的通道类 + `BacktestEngine(broker=...)` 注入 | 1 新文件 + 1 行注入 |
 
 ### 8.1 新策略
 
@@ -398,7 +402,7 @@ class YourStrategy(Strategy):
         if param1 < 2:
             raise ValueError("param1 须 >= 2")   # 跨参数 / 范围校验放构造函数
         self.param1 = param1
-        self.params = {"param1": param1}          # 注意类属性陷阱：须在实例上重新赋值
+        self.params = {"param1": param1}          # 元数据须在实例上显式赋值
         self.required_factors = []               # 如需因子：["momentum_20"]
 
     def on_init(self, ctx: StrategyContext) -> None: ...
@@ -420,8 +424,11 @@ register_strategy(StrategySpec(                  # 文件尾注册 = 全部接�
 下拉与参数输入框、`GET /api/strategies` 全部由注册表自动生成，**不需要改动
 任何入口代码**（strategy 包导入时自动发现同目录的全部模块）。
 
-三个补充约定：
+四个补充约定：
 
+- **元数据显式赋值**：`params` 与 `required_factors` 由子类在 `__init__` 里赋值，
+  基类只声明类型不给默认值——漏赋值时访问即 `AttributeError`，而不是静默共享
+  基类的可变对象（服务层读取 `required_factors` 时同样不做兜底）；
 - **参数 choices**：窗口类参数若依赖参数化因子（名字即规格，如
   `momentum_20` / `momentum_60`），用 `choices` 限定为已注册规格，把
   "运行期 KeyError"提前到"构造期 ValueError"；
@@ -466,21 +473,28 @@ class YourSource:
                                                      # pre_close=0 / trade_status=1 / is_st=0
 ```
 
-注册：`service.get_source` 字典加一行 + `cli.py` 的 `--source` choices 加一项。
-可参考 `wind_source.py` 的延迟导入、字段降级、出口必需列强校验三个防御技巧。
+注册：在 `data/registry.py` 的 SOURCES 里加一行（名称、一句话说明、适配器
+模块名、类名）。CLI 的 `--source` 选项、服务层工厂与 Web 侧校验全部由该清单
+派生，无需改动任何入口代码；数据源模块是延迟导入的，未安装该源依赖的环境
+依然能启动。可参考 `wind_source.py` 的延迟导入、字段降级、出口必需列强校验
+三个防御技巧。
 
 ### 8.4 换存储 / 新频率 / 新风控 / 切实盘
 
 - **换存储**（如 Parquet + DuckDB）：实现 `DataRepository` 四方法
   （`save_bars` / `load_bars` / `latest_bar_time` / `list_codes`），
   `service.get_repo` 按环境变量分发。
-- **新频率**（15/30/60min）：`baostock_source._FREQ_MAP` 加一行 + `mysql_repo.TABLES`
-  加一行 + DDL 追加建表，跑 `init-schema` 幂等建表。
+- **新频率**（15/30/60min）：`data/registry.py` 的 FREQS 加一行（表名随之
+  进入 `mysql_repo.TABLES`）+ 适配器的频率映射加一行 + `mysql_repo` 的读写
+  分派各加一个分支 + DDL 追加建表（`init-schema` 幂等建表）。取数 SQL 与列
+  口径因频率而异，这部分无法由清单取代。
 - **新风控**：继承 `RiskRule` 实现 `check`（返回 None 放行，否则返回拒绝原因），
-  加入 `RiskChain.rules` 链尾；或调用方通过 `BacktestEngine(risk_rules=[...])` 注入。
-- **切实盘**：实现 `Broker` 协议（`submit` + `settle`）的通道类，替换
-  `BacktestEngine.__init__` 里构造撮合实现的那一处注入；策略与信号逻辑代码
-  0 改动（LSP 的兑现）。
+  加入 `RiskChain` 默认规则集；或调用方通过 `BacktestEngine(risk_rules=[...])`
+  注入（传 `None` 用默认集，传 `[]` 表示不做风控）。规则若需读链上状态
+  （如当日委托量），重写 `attach` 保存上下文，链在装配时会调用它。
+- **切实盘**：实现 `Broker` 协议（`submit` + `settle`）的通道类，经
+  `BacktestEngine(broker=...)` 注入（缺省仍用 `SimBroker`）；策略与信号逻辑
+  代码 0 改动（LSP 的兑现）。
 
 ### 8.5 扩展后验证清单
 
@@ -576,6 +590,9 @@ def fetch_bars(code: str, start: str) -> pd.DataFrame:
 | `test_trend` | 海龟策略：ATR/唐奇安因子手算对照、预热语义、参数校验、通道突破全链路（T+1 配对 + 金字塔上限） | 趋势跟踪 + ATR 定仓回归 |
 | `test_strategy_registry` | 策略注册表：自动发现 / 规格与默认值一致 / 字符串转型 / choices 拦截 / 未知参数报错 / overlay 钩子 | CLI 与 Web 共用构造路径（扩展机制核心） |
 | `test_cli_required_args` | CLI 必填参数：缺 --source / --factors / --strategy 时退出码 2 | 数据源 / 策略 / 因子禁止隐式默认 |
+| `test_broker_injection` | 通道注入：注入实现被真正调用（逐 bar 请求撮合、订单流入），缺省仍装配 SimBroker | LSP：换通道不改主循环 |
+| `test_risk_chain` | 风控链空规则语义（`[]` 表示无规则）、上下文装配时显式挂载、策略元数据漏赋值即 AttributeError | 责任链装配契约 + 策略元数据契约 |
+| `test_data_registry` | 数据源/频率清单单一来源：仓储表名、CLI choices、Web 校验三处同源派生，未知取值报错 | 消除重复清单（OCP 的数据源侧） |
 
 **改完任何代码都先跑一遍 smoke_test。** 需真实网络或 Wind 终端的数据源侧
 验证见 ReadMe §6.2：裸 TCP 探测端口，或直接调适配器拉一小段。
@@ -593,6 +610,8 @@ def fetch_bars(code: str, start: str) -> pd.DataFrame:
 ③ 防未来（`FactorProbe` 全链路，逐 bar 对照因果口径）。
 新策略：`final_equity > 0` + 整手断言 + T+1 逐轮配对（参照 `test_daily`）。
 新风控：构造触发场景（如 99% 仓位超限），断言 `len(result.rejects) > 0`。
+新数据源：在 `test_data_registry` 的清单断言之外，参考 `test_wind_source` 的
+做法用 mock 响应覆盖适配器的列归一与出口校验（不连真实服务）。
 
 ### 9.4 测试失败的常见原因
 

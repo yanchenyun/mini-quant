@@ -1,7 +1,7 @@
 """风控责任链：一条规则一个类（OCP）。新增规则 = 新增子类 + 注册。"""
 from __future__ import annotations
 
-from ..core.abstractions import PortfolioView, RiskRule
+from ..core.abstractions import PortfolioView, RiskContext, RiskRule
 from ..core.models import Bar, Order, Position, Side
 from .sim_broker import CostModel
 
@@ -40,10 +40,15 @@ class AvailabilityRule(RiskRule):
     """T+1：只允许卖出 available 数量。
 
     同日内多笔卖出防重：同一 bar 策略可能为同一标的提交多笔卖出订单，
-    而 Position.available 要等到次 bar 结算时才扣减。本规则通过
-    RiskChain._pending_sell 追踪当日已委托量，确保累计委托不超过可卖。
+    而 Position.available 要等到次 bar 结算时才扣减。本规则挂载责任链
+    上下文后，用链上的 pending_sell 追踪当日已委托量，确保累计委托不超过可卖。
     """
-    _chain: RiskChain | None = None  # 由 RiskChain.check() 注入，用于读取 pending_sell
+
+    def __init__(self):
+        self._ctx: RiskContext | None = None
+
+    def attach(self, ctx: RiskContext) -> None:
+        self._ctx = ctx
 
     def check(self, order: Order, portfolio: PortfolioView, bar: Bar) -> str | None:
         if order.side != Side.SELL:
@@ -51,8 +56,12 @@ class AvailabilityRule(RiskRule):
         pos: Position | None = portfolio.position(order.code)
         if pos is None:
             return f"可卖不足(可卖0，委托{order.quantity})，T+1限制"
+        if self._ctx is None:
+            raise RuntimeError(
+                "AvailabilityRule 未挂载责任链（attach 未调用）：本规则需读取"
+                "链上的当日委托量，请通过 RiskChain 装配而非单独调用 check")
         # 扣减同日内已通过风控的累计委托量，防止同一 bar 重复委托
-        pending = self._chain.pending_sell(order.code)
+        pending = self._ctx.pending_sell(order.code)
         effective = pos.available - pending
         if effective < order.quantity:
             return f"可卖不足(可卖{effective}，委托{order.quantity})，T+1限制"
@@ -73,21 +82,25 @@ class RiskChain:
 
     内置同日内卖出防重：订单通过全部规则后，若为 SELL 则自动记录
     已委托量到 _pending_sell，后续同标的卖出检查会扣减该量。
+
+    rules 为 None 时装配默认规则集；显式传空列表表示"不做风控"
+    （空列表是有意义的取值，不与"未指定"混为一谈）。
     """
 
     def __init__(self, rules: list[RiskRule] | None = None,
                  cost: CostModel | None = None):
-        self.rules: list[RiskRule] = rules or [
-            TradabilityRule(), LotSizeRule(),
-            CashSufficiencyRule(cost), AvailabilityRule(),
-        ]
+        self.rules: list[RiskRule] = (
+            [TradabilityRule(), LotSizeRule(),
+             CashSufficiencyRule(cost), AvailabilityRule()]
+            if rules is None else list(rules))
         self.rejects: list[dict] = []
         self._pending_sell: dict[str, int] = {}  # code → 当日累计已委托卖出量
+        # 装配时一次性把上下文交给需要它的规则，规则侧无需任何试探
+        for rule in self.rules:
+            rule.attach(self)
 
     def check(self, order: Order, portfolio: PortfolioView, bar: Bar) -> str | None:
         for rule in self.rules:
-            if hasattr(rule, '_chain'):
-                rule._chain = self
             reason = rule.check(order, portfolio, bar)
             if reason is not None:
                 self.rejects.append({"date": bar.trade_date, "code": order.code,

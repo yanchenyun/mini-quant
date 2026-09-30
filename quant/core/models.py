@@ -33,11 +33,6 @@ class Bar:
     is_st: int = 0             # 是否 ST：1 为 ST / *ST，0 为正常
 
     @property
-    def date(self) -> str:
-        """向后兼容别名：等价于 trade_date。"""
-        return self.trade_date
-
-    @property
     def tradable(self) -> bool:
         """是否可交易：排除停牌与 ST 标的。"""
         return self.trade_status == 1 and self.is_st != 1

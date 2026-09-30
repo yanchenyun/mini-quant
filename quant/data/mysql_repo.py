@@ -20,13 +20,12 @@ import pandas as pd
 import pymysql
 
 from ..config import DBSettings
+from .registry import freq_tables
 from .timeutil import norm_dt
 
-# ── 表名注册表：新增频率 = 加一行 + 建表 DDL ─────────────────
-TABLES: dict[str, str] = {
-    "1d": "ods_d_stock_quotation_i",
-    "5min": "ods_mi_stock_quotation_i",
-}
+# ── 表名注册表：由 data.registry 的频率清单派生（新增频率在那里加一行）───
+# 注意：下面 DDL 与各读写 SQL 里的表名是字面量，加频率时需与本映射同步。
+TABLES: dict[str, str] = freq_tables()
 
 # 与 ODS 规范保持一致（幂等建库建表，方便新环境一键初始化）
 DDL = """
@@ -194,7 +193,7 @@ class MySQLBarRepo:
             return self._save_daily(df)
         if freq == "5min":
             return self._save_minute(df)
-        raise ValueError(f"不支持的频率: {freq}")
+        raise ValueError(f"不支持的频率: {freq}（可选: {list(TABLES)}）")
 
     def _save_daily(self, df: pd.DataFrame) -> int:
         # fetch_bars 的日线输出含 dt/trade_date；写库前归一为 date 列
@@ -233,7 +232,7 @@ class MySQLBarRepo:
             return self._load_daily(codes, start, end, adjust)
         if freq == "5min":
             return self._load_minute(codes, start, end, adjust)
-        raise ValueError(f"不支持的频率: {freq}")
+        raise ValueError(f"不支持的频率: {freq}（可选: {list(TABLES)}）")
 
     def _load_daily(self, codes: list[str], start: str, end: str,
                     adjust: str) -> pd.DataFrame:
@@ -406,18 +405,3 @@ class MySQLBarRepo:
             if n not in wide.columns:
                 wide[n] = float("nan")
         return wide[["code", "dt", *names]]
-
-    # ── 向后兼容别名（v0.1 接口，委托到 freq 版本）─────────
-    def save_daily(self, df: pd.DataFrame) -> int:
-        return self.save_bars(df, freq="1d")
-
-    def load_daily(self, codes: list[str], start: str, end: str,
-                   adjust: str = "2") -> pd.DataFrame:
-        return self.load_bars(codes, start, end, freq="1d", adjust=adjust)
-
-    def latest_date(self, code: str, adjust: str = "2") -> str | None:
-        return self.latest_bar_time(code, freq="1d", adjust=adjust)
-
-
-# v0.1 类名别名：旧引用零改动
-MySQLDailyRepo = MySQLBarRepo

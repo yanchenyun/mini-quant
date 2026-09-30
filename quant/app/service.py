@@ -9,10 +9,8 @@ from ..backtest.engine import BacktestEngine, BacktestResult
 from ..backtest.sim_broker import CostModel
 from ..config import BacktestSettings, Settings, load_settings
 from ..core.abstractions import Strategy
-from ..data.baostock_source import BaostockSource
-from ..data.akshare_source import AkshareSource
-from ..data.wind_source import WindSource
 from ..data.mysql_repo import MySQLBarRepo
+from ..data.registry import get_source
 from ..factor import FactorEngine, get as get_factor
 
 
@@ -21,29 +19,12 @@ def get_repo(settings: Settings | None = None) -> MySQLBarRepo:
     return MySQLBarRepo(settings.db)
 
 
-def get_source(name: str):
-    """按名称获取数据源类（工厂方法）。
-
-    返回数据源类（非实例），因其所有方法均为 @staticmethod。
-    name 必传：'baostock' / 'akshare' / 'wind'（需本机 Wind 终端）。
-    不设默认数据源——数据来源决定结论口径，由调用方每次明确指定。
-    """
-    sources = {
-        "baostock": BaostockSource,
-        "akshare": AkshareSource,
-        "wind": WindSource,
-    }
-    if name not in sources:
-        raise ValueError(f"未知数据源: {name}（可选: {list(sources)}）")
-    return sources[name]
-
-
 def ingest_bars(code: str, start: str, end: str | None = None,
                 adjust: str = "2", freq: str = "1d",
                 *, source: str, init_schema: bool = False) -> int:
     """增量抓取并存入 MySQL。从库中已有最新 bar 的当日/次日续抓。
 
-    source 为必填关键字参数，'baostock' / 'akshare' / 'wind'。
+    source 为必填关键字参数，取值见 data.registry 的数据源注册表。
     """
     repo, src = get_repo(), get_source(source)
     if init_schema:
@@ -74,8 +55,8 @@ def run_backtest(code: str, start: str, end: str | None = None,
     """从 MySQL 取数 → 跑回测。返回 (结果, 行情帧) 供 CLI / Web 渲染。
 
     strategy 必传（由调用方经 quant.strategy.build_strategy 构造，service
-    不感知任何具体策略）。freq: '1d' 日线；'5min' 5分钟线（策略写法完全
-    一致，指标按 bar 计算）。因子：strategy.required_factors 声明依赖时，
+    不感知任何具体策略）。freq 取值见 data.registry 的频率注册表；策略
+    写法与频率无关，指标按 bar 计算。因子：strategy.required_factors 声明依赖时，
     自动多加载预热窗口的历史即时计算（与行情同帧同口径——SSOT），再裁剪
     回测区间注入引擎。
     """
@@ -85,7 +66,7 @@ def run_backtest(code: str, start: str, end: str | None = None,
     # end 未指定时默认今天（与 ingest 的语义一致）
     end = end or datetime.now().strftime("%Y-%m-%d")
 
-    names = list(getattr(strategy, "required_factors", None) or [])
+    names = list(strategy.required_factors)
     load_start = start
     if names:
         # 因子预热（lookback）：多加载 max(min_periods) 的历史算因子，
