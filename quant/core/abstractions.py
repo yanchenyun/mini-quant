@@ -1,7 +1,7 @@
 """全系统扩展点的抽象接口契约（Protocol / ABC）。
 
 核心原则：策略只依赖 StrategyContext 窄接口（ISP），
-新数据源 / 券商 / 风控 / 因子 = 新增实现类，改 0 行旧代码（OCP）。
+新数据源 / 券商 / 风控 / 因子 = 新增实现类并登记，入口代码零改动（OCP）。
 """
 from __future__ import annotations
 

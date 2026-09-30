@@ -41,7 +41,7 @@ class SimBroker:
 
     def __init__(self, cost: CostModel | None = None):
         self.cost = cost or CostModel()
-        # (order, remaining_bars) 元组列表：Settle 时逐根 bar 倒计时
+        # (order, remaining_bars) 元组列表：settle 时逐根 bar 倒计时
         self._pending: list[tuple[Order, int]] = []
 
     def submit(self, order: Order) -> None:

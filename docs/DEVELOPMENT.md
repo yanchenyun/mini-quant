@@ -381,7 +381,7 @@ result, bars = run_backtest(               # 取数 → 跑回测，返回 (结�
 |---|---|---|
 | 新策略 | `quant/strategy/<新文件>.py`（策略类 + 文件尾自注册） | 1 新文件；CLI / Web / 前端自动发现，0 处入口改动 |
 | 新因子 | `quant/factor/builtin.py` 追加类 + register | 1 类 + 1 行 |
-| 新数据源 | `quant/data/<新源>.py` + `data/registry.py` 的 SOURCES 加一行 | 1 新文件 + 1 行；CLI / 服务层工厂 / Web 校验自动跟随 |
+| 新数据源 | `quant/data/<新源>.py` + `data/registry.py` 的 SOURCES 加一行 | 1 新文件 + 1 行；CLI / 服务层取源 / Web 校验自动跟随 |
 | 换存储 | 重写 `DataRepository` 实现 + `service.get_repo` | 1 文件 + 1 行 |
 | 新频率 | `data/registry.py` 的 FREQS 加一行 + 适配器频率映射 + 仓储读写分派 + DDL | 1 行 + 2 处分派 + DDL |
 | 新风控 | `risk.py` 追加子类 + 加入 `RiskChain` 默认规则集 | 1 类 + 1 行 |
@@ -474,7 +474,7 @@ class YourSource:
 ```
 
 注册：在 `data/registry.py` 的 SOURCES 里加一行（名称、一句话说明、适配器
-模块名、类名）。CLI 的 `--source` 选项、服务层工厂与 Web 侧校验全部由该清单
+模块名、类名）。CLI 的 `--source` 选项、服务层取源与 Web 侧校验全部由该清单
 派生，无需改动任何入口代码；数据源模块是延迟导入的，未安装该源依赖的环境
 依然能启动。可参考 `wind_source.py` 的延迟导入、字段降级、出口必需列强校验
 三个防御技巧。

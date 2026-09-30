@@ -75,7 +75,7 @@ class BacktestEngine:
         self._today_bar: dict[str, Bar] = {}       # code → 当日最新 bar（风控/撮合用）
         self._view = self._PortfolioViewImpl(self.portfolio)
 
-    # 引擎自身作为 OrderSink（策略只认识 OrderSink 协议，不认识引擎）
+    # 账户只读视图：把 Portfolio 收窄为 PortfolioView 协议（策略只看得到它）
     class _PortfolioViewImpl(PortfolioView):
         def __init__(self, pf: Portfolio):
             self._pf = pf

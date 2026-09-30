@@ -11,9 +11,10 @@
                Bar 是引擎 / 策略 / 仓储 / Web 共用的统一数据类型。
 - abstractions 系统扩展点的接口契约（Protocol 鸭子接口 + ABC 抽象基类混用）：
                    MarketDataSource / DataRepository / Strategy / StrategyContext /
-                   OrderSink / PortfolioView / Broker / RiskRule / Factor /
-                   FactorAccessor。新增实现类即可接入：策略与因子注册即用，
-                   数据源与存储另需在服务层工厂处登记一行（清单不在本文件枚举）。
+                   OrderSink / PortfolioView / Broker / RiskContext / RiskRule /
+                   Factor / FactorAccessor。新增实现类即可接入：策略与因子注册
+                   即用，数据源在数据层注册表（data.registry）登记一行，存储
+                   实现由服务层工厂装配（清单不在本文件枚举）。
 - portfolio    组合记账本：现金 / 持仓 / 净值曲线 / 成交记录。apply_fill 按成交
                更新现金与持仓、卖出时结算本轮盈亏（含买入佣金摊薄的成本基准）。
 
