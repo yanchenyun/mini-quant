@@ -11,6 +11,7 @@
     第 3 层  HTTPS 请求    —— 走应用层协议能不能拿到 200（对 akshare 最关键）
     第 4 层  代理环境      —— 环境变量代理是否指向一个"坏代理"
     第 5 层  端到端        —— 真正调一次 baostock 登录 / akshare 拉数
+                              （TCP 判不通但登录成功时，会明确提示“结果矛盾”）
 
 第 0 层是为了跨环境对比设计的：在"家里 / 公司 / 手机热点"各跑一次，把两份
 输出并排比对，就能判定问题出在"网络位置"还是"这台机器"。
@@ -27,6 +28,9 @@
 ----
     python tools/diagnose_network.py            # 全量诊断
     python tools/diagnose_network.py --quick    # 只跑 TCP 层（几秒出结果）
+
+第 5 层出现“结果矛盾”时，用同目录的 probe_baostock.py 抓登录真实对端：
+    python tools/probe_baostock.py -n 3
 
 依赖
 ----
@@ -450,11 +454,12 @@ def report(quick: bool = False) -> None:
 
     # ── 第 5 层：端到端 ─────────────────────────────────────
     print("\n[5/5] 端到端")
-    print(f"  baostock : {baostock_login_probe()}")
+    bs_login = baostock_login_probe()
+    print(f"  baostock : {bs_login}")
     print(f"  akshare  : 日线接口 {_mark(ak_http)} "
           f"({'可用' if ak_http.all_ok else '不可用'})")
 
-    _summarize(baostock_tcp, ak_http, env)
+    _summarize(baostock_tcp, ak_http, env, bs_login)
 
 
 def _summarize_tcp(baostock_tcp: ProbeResult) -> None:
@@ -468,15 +473,23 @@ def _summarize_tcp(baostock_tcp: ProbeResult) -> None:
 
 
 def _summarize(baostock_tcp: ProbeResult, ak_http: ProbeResult,
-               env: dict[str, str]) -> None:
+               env: dict[str, str], bs_login: str = "") -> None:
     """根据各层结果给出人话结论与建议。"""
     print("\n" + "=" * 66)
     print("结论与建议")
     print("=" * 66)
 
     if baostock_tcp.none_ok:
-        print("• baostock：TCP 连不上 10030 端口 → 网络层阻断。baostock 走裸 TCP、")
-        print("  不支持代理，因此只能靠『TUN 模式』或换数据源绕过。")
+        if "登录成功" in bs_login:
+            # 交叉核对：TCP 层判不通、端到端却成功，说明两条路不是同一条，
+            # 此时不能下“网络层阻断”的结论，必须去查登录真正连的对端。
+            print("• baostock：结果矛盾 —— 裸 socket 探测 10030 全部超时，")
+            print("  但端到端登录成功。登录走的不是这条探测路径，不能据此判定")
+            print("  『网络层阻断』。请运行 tools/probe_baostock.py 抓取登录时的")
+            print("  真实对端地址，据此区分『间歇性阻断』与『本地中间人』。")
+        else:
+            print("• baostock：TCP 连不上 10030 端口 → 网络层阻断。baostock 走裸 TCP、")
+            print("  不支持代理，因此只能靠『TUN 模式』或换数据源绕过。")
     elif baostock_tcp.all_ok:
         print("• baostock：TCP 可达。若仍登录失败，请核对账号/服务端状态。")
 
