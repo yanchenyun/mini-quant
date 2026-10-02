@@ -13,6 +13,7 @@ AKShare 免费开源、无需注册，底层聚合东方财富等多个数据源
 """
 from __future__ import annotations
 
+import sys
 import time
 from datetime import datetime, timedelta
 
@@ -25,14 +26,6 @@ from .timeutil import norm_dt
 def _to_ak_symbol(code: str) -> str:
     """本系统 'sh.600000' → AKShare '600000'（纯数字）。"""
     return code.split(".")[-1]
-
-
-def _from_ak_symbol(code: str) -> str:
-    """AKShare '600000' → 本系统 'sh.600000'（带交易所前缀）。"""
-    # 6/9 开头为沪市，其余为深市
-    if code.startswith("6") or code.startswith("9"):
-        return f"sh.{code}"
-    return f"sz.{code}"
 
 
 # ── 复权标记转换 ──────────────────────────────────────────────────────────
@@ -167,6 +160,7 @@ class AkshareSource:
         # 按 30 天分段请求（AKShare 分钟数据单次约支持 1-2 个月）
         segment_days = 30
         segments = []
+        errors: list[str] = []
         seg_start = start_dt
 
         while seg_start <= end_dt:
@@ -182,14 +176,24 @@ class AkshareSource:
                 ))
                 if seg_df is not None and not seg_df.empty:
                     segments.append(seg_df)
-            except Exception:
-                # 某段无数据则跳过（历史太早可能无分钟数据）
-                pass
+            except Exception as e:
+                # 重试耗尽仍失败：记录在案，不静默吞掉。空缺的分段
+                # 会让回测在无感知的情况下少一段行情——比失败更糟
+                errors.append(f"{s_str[:10]}~{e_str[:10]}: {e}")
 
             seg_start = seg_end + timedelta(days=1)
 
+        if errors:
+            # 部分段失败：保留已成功的数据继续，但把缺口暴露到 stderr，
+            # 由调用方决定是否接受（分段级失败经三次重试，非瞬时抖动）
+            print(f"[akshare] 分钟数据分段拉取失败 {len(errors)} 段: "
+                  + "; ".join(errors), file=sys.stderr)
         if not segments:
-            return pd.DataFrame()
+            if errors:
+                raise RuntimeError(
+                    f"AKShare 分钟线全部分段拉取失败（{symbol} "
+                    f"{start}~{end}）: {'; '.join(errors)}")
+            return pd.DataFrame()   # 各段均正常返回空（区间确实无数据）
 
         df = pd.concat(segments, ignore_index=True)
         df = df.rename(columns=_MIN_RENAME)

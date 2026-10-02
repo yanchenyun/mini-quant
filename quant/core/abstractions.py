@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Protocol
+from typing import Callable, Protocol
 
 import pandas as pd
 
@@ -51,8 +51,20 @@ class DataRepository(Protocol):
 
 # ── 策略面 ───────────────────────────────────────────────────────────────
 class OrderSink(Protocol):
-    """订单入口：引擎实现它；策略只通过 Context 调用，不认识引擎。"""
-    def submit(self, order: Order) -> None: ...
+    """订单入口：引擎实现它；策略只通过 Context 调用，不认识引擎。
+
+    契约的可感知性：submit 返回订单是否被受理，reject 记录未能形成
+    委托的下单意图。两者共同保证"策略想知道单有没有下出去"不需要
+    靠猜——静默丢单会把回测错误伪装成策略行为。
+    """
+
+    def submit(self, order: Order) -> bool:
+        """受理订单；返回 False 表示被拒（原因已记入拒单日志）。"""
+        ...
+
+    def reject(self, code: str, side: Side, reason: str) -> None:
+        """记录未形成委托的下单意图（无持仓 / T+1 冻结 / 不足一手等）。"""
+        ...
 
 
 class PortfolioView(Protocol):
@@ -72,7 +84,8 @@ class StrategyContext:
 
     def __init__(self, history: pd.Series, clock: str,
                  portfolio: PortfolioView, sink: OrderSink,
-                 price: float, factors: "FactorAccessor | None" = None):
+                 price: float, factors: "FactorAccessor | None" = None,
+                 equity_fn: "Callable[[], float] | None" = None):
         """
         Args:
             history: 截至当前 bar（含）的收盘价 Series，index 为 dt。
@@ -81,6 +94,9 @@ class StrategyContext:
             sink: 订单提交入口（引擎实现 OrderSink 协议）。
             price: 当前 bar 收盘价（下单参考价）。
             factors: 因子只读视图；未启用因子时为 None。
+            equity_fn: 账户权益估值函数（引擎注入）。估值基准——当日有效
+                收盘价、停牌兜底的最近有效收盘价——是引擎的运行态知识，
+                策略通过 ctx.equity() 取值，不应自组价格字典。
         """
         self._history = history
         self.clock = clock
@@ -88,6 +104,7 @@ class StrategyContext:
         self._sink = sink
         self._price = price
         self._factors = factors
+        self._equity_fn = equity_fn
 
     @property
     def history(self) -> pd.Series:
@@ -120,26 +137,56 @@ class StrategyContext:
         """截至当前 bar（含）的因子值序列，index 为 bar 时间戳 dt。"""
         return self._ensure_factors().history(name)
 
-    def buy(self, code: str, cash_ratio: float = 0.95) -> None:
-        """按可用现金比例市价买入（100 股向下取整）。"""
-        if self._price <= 0:
-            return
+    def equity(self) -> float:
+        """当前账户权益（现金 + 持仓市值）。
+
+        估值基准由引擎维护，与日终净值快照同一套取价兜底口径，
+        策略不需要也不应该自行拼装价格字典——把估值基准的维护
+        责任留在引擎（引擎外的构造方没有默认基准，调用即报错）。
+        """
+        if self._equity_fn is None:
+            raise RuntimeError("本上下文未注入估值函数：权益估值基准由回测引擎维护")
+        return self._equity_fn()
+
+    def buy(self, code: str, cash_ratio: float = 0.95) -> bool:
+        """按可用现金比例市价买入（100 股向下取整）。
+
+        Returns:
+            True 表示订单已提交至撮合通道（后续仍可能因涨停或现金
+            不足未成交）；False 表示未形成委托——参考价无效、可用资金
+            不足一手或被风控拒绝，原因均已记入拒单日志。
+        """
+        if not self._price > 0:     # 同时拦住非正价与 NaN（NaN 比较恒为假）
+            self._sink.reject(code, Side.BUY, "参考价无效，无法计算买入股数")
+            return False
         budget = self.portfolio.cash * cash_ratio
         qty = int(budget / self._price / 100) * 100
-        if qty > 0:
-            self._sink.submit(Order(code=code, side=Side.BUY, quantity=qty,
-                                    created_at=self.clock))
+        if qty <= 0:
+            self._sink.reject(code, Side.BUY, "可用资金不足一手")
+            return False
+        return self._sink.submit(Order(code=code, side=Side.BUY, quantity=qty,
+                                       created_at=self.clock))
 
-    def sell(self, code: str, ratio: float = 1.0) -> None:
-        """卖出可用仓位（T+1：仅 available 部分）。"""
+    def sell(self, code: str, ratio: float = 1.0) -> bool:
+        """卖出可用仓位（T+1：仅 available 部分）。
+
+        Returns:
+            True 表示订单已提交至撮合通道；False 表示未形成委托——
+            无持仓、T+1 当日无可卖份额或按比例取整后不足一手，
+            原因均已记入拒单日志。依赖提交结果的策略应检查返回值，
+            在 False 时保持"未离场"之类的中间状态以便重试。
+        """
         pos = self.portfolio.position(code)
         if pos is None or pos.available <= 0:
-            return
+            self._sink.reject(code, Side.SELL, "无持仓或T+1当日无可卖份额")
+            return False
         # 全仓卖出时直接清仓，避免整手取整导致残留零股
         qty = pos.available if ratio >= 1.0 else int(pos.available * ratio / 100) * 100
-        if qty > 0:
-            self._sink.submit(Order(code=code, side=Side.SELL, quantity=qty,
-                                    created_at=self.clock))
+        if qty <= 0:
+            self._sink.reject(code, Side.SELL, "可卖份额按比例取整后不足一手")
+            return False
+        return self._sink.submit(Order(code=code, side=Side.SELL, quantity=qty,
+                                       created_at=self.clock))
 
 
 class Strategy(ABC):
@@ -170,6 +217,8 @@ class Strategy(ABC):
         通过 ctx.price 获取当前 bar 收盘价，通过 ctx.factor() 读取因子值。
 
         信号产生的订单会在次一 bar 开盘时撮合成交（防未来函数）。
+        ctx.buy / ctx.sell 返回订单是否已提交，未提交的原因记入拒单
+        日志；用标志位记忆"已下单"的策略应以提交成功为准。
         """
         ...
 
@@ -188,20 +237,26 @@ class Broker(Protocol):
 
     本层只声明能力，不关心是回测撮合还是真实的柜面通道——引擎换一个实现
     即可在回测与实盘之间切换（具体实现类不进入核心层）。
+
+    reset 由引擎在每次回测开始时调用：有状态的实现（挂单簿等）借它清空
+    自身，使引擎实例可以重复运行；无状态的实现给空实现即可。
     """
     def submit(self, order: Order) -> None: ...
     def settle(self, bar: Bar) -> list[Fill]:
         """以本 bar（订单提交后的次一 bar）开盘价撮合挂起的订单。"""
         ...
+    def reset(self) -> None: ...
 
 
 class RiskContext(Protocol):
     """责任链暴露给规则的上下文窄接口（ISP）。
 
     绝大多数规则只需 check 的三个入参；少数要读链上日内状态的规则
-    （如 T+1 委托防重）通过本接口取值，而不是直接持有整条链。
+    （如 T+1 委托防重、日内现金占用）通过本接口取值，而不是直接
+    持有整条链。
     """
     def pending_sell(self, code: str) -> int: ...
+    def pending_buy_cost(self) -> float: ...
 
 
 class RiskRule(ABC):

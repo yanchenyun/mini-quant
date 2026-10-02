@@ -22,9 +22,10 @@ class Portfolio:
     def position(self, code: str) -> Position | None:
         return self.positions.get(code)
 
-    def equity(self, prices: dict[str, float]) -> float:
-        """当前总权益 = 现金 + 持仓市值。"""
-        return self.cash + self._market_value(prices)
+    def equity(self, prices: dict[str, float],
+               last_prices: dict[str, float] | None = None) -> float:
+        """当前总权益 = 现金 + 持仓市值（取价兜底口径见 _market_value）。"""
+        return self.cash + self._market_value(prices, last_prices)
 
     def _market_value(self, prices: dict[str, float],
                       last_prices: dict[str, float] | None = None) -> float:

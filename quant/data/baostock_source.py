@@ -103,12 +103,6 @@ class BaostockSource:
                     1 if col == "trade_status" else 0).astype(int)
         return df
 
-    # ── 向后兼容别名 ─────────────────────────────────────
-    @staticmethod
-    def fetch_daily(code: str, start: str, end: str,
-                    adjust: str = "2") -> pd.DataFrame:
-        return BaostockSource.fetch_bars(code, start, end, freq="1d", adjust=adjust)
-
     @staticmethod
     def fetch_trade_dates(start: str, end: str) -> list[str]:
         """交易日历（用于增量校验）。"""

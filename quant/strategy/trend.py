@@ -19,7 +19,9 @@ risk_pct × 权益（2 倍 ATR 的价格回撤与 ATR 倒数定仓相互抵消�
 相对经典海龟系统有以下取舍。框架只有市价单（次一 bar 开盘成交），没有盘中
 止损委托，本策略用当根 bar.low 判定触及、执行延到次一 bar 开盘，日线跳空会
 放大偏差，追求贴近盘中止损的效果请用 5min 频率回测。A 股个股不可做空，本
-策略仅保留多头腿。T+1 约束下当日买入的仓位当日不可卖，止损最早次日执行。
+策略仅保留多头腿。T+1 约束下当日买入的仓位当日不可卖，止损最早次日执行；
+离场委托因 T+1 冻结或风控拒绝而未能提交时，离场条件仍成立即逐 bar 重试，
+直至确认空仓——离场意图不设闩锁，避免与实际持仓状态脱节。
 当前回测为单标的，经典趋势跟踪赖以生存的多市场分散效应无法体现。
 """
 from __future__ import annotations
@@ -76,11 +78,13 @@ class TurtleTrendStrategy(Strategy):
                                  f"donchian_low_{exit}",
                                  f"atr_{atr_window}"]
 
-        # 内部状态：跨 bar 记忆（引擎对同一实例全程复用）
+        # 内部状态：跨 bar 记忆（引擎对同一实例全程复用）。
+        # 离场不设闩锁标志：离场条件成立时逐 bar 补发卖单直到空仓，
+        # 避免意图记账与实际状态脱节（T+1 冻结或风控拒绝时把仓位
+        # 永久锁死的正是旧版的 _exiting 闩锁）
         self._units = 0        # 已建单位数（0 = 空仓）
         self._peak = 0.0       # 持仓期最高价（吊灯止损基准）
         self._next_add = 0.0   # 下一加仓触发价
-        self._exiting = False  # 已发离场单但尚未成交（如被拒单）标志
 
     def on_init(self, ctx: StrategyContext) -> None:
         """回测开始前重置状态。
@@ -89,7 +93,6 @@ class TurtleTrendStrategy(Strategy):
         因此这里不能读取行情，只能初始化内部变量。
         """
         self._units, self._peak, self._next_add = 0, 0.0, 0.0
-        self._exiting = False
 
     def on_bar(self, ctx: StrategyContext, bar: Bar) -> None:
         """每根 bar：先判离场/止损，再判加仓或入场（信号次一 bar 开盘成交）。"""
@@ -103,21 +106,20 @@ class TurtleTrendStrategy(Strategy):
         holding = pos is not None and pos.quantity > 0
 
         if holding:
-            # 卖出未成交（如跌停一字板拒单）时状态已清零：按当前 bar 重新武装吊灯
+            # 持仓期间持续维护吊灯基准（含卖出未成交时的重新武装）
             self._peak = bar.high if self._peak <= 0 else max(self._peak, bar.high)
             chandelier = self._peak - self.stop_atr * atr
             if bar.low <= lower or bar.low <= chandelier:
-                if not self._exiting:
-                    # 跌破下轨或触及吊灯线 → 清仓（次一 bar 开盘执行）
-                    ctx.sell(bar.code, 1.0)
-                    self._exiting = True
+                # 跌破下轨或触及吊灯线 → 清仓（次一 bar 开盘执行）。
+                # T+1 未解禁（available=0）或被风控拒绝时提交失败，
+                # 下根 bar 条件仍成立会自动重试，直至确认空仓
+                if ctx.sell(bar.code, 1.0):
                     self._units = 0
                     self._next_add = float("inf")   # 离场途中禁止加仓
-            elif (not self._exiting and self._units < self.max_units
+            elif (self._units < self.max_units
                   and bar.high >= self._next_add):
                 self._submit_unit(ctx, bar, atr, pyramid=True)
         else:
-            self._exiting = False                   # 已确认空仓，恢复可入场状态
             if bar.high > upper:
                 # 突破上轨 → 开第一个单位；以当根最高价为吊灯初值
                 # （实际成交在次一 bar 开盘，此处为可接受的保守近似）
@@ -138,9 +140,10 @@ class TurtleTrendStrategy(Strategy):
             pyramid: True 表示加仓（触发价按步长递增），False 表示首次建仓。
 
         Returns:
-            True 表示已发出买单；False 表示定仓股数不足一手或现金不足。
+            True 表示买单已提交；False 表示定仓股数不足一手、现金不足
+            或被风控拒绝——金字塔额度只在提交成功时占用。
         """
-        equity = ctx.portfolio.equity({bar.code: ctx.price})
+        equity = ctx.equity()
         shares = int(self.risk_pct * equity / (self.k * atr) / 100) * 100
         if shares <= 0 or ctx.portfolio.cash <= 0:
             return False
@@ -148,7 +151,8 @@ class TurtleTrendStrategy(Strategy):
         if budget <= 0:
             return False
 
-        ctx.buy(bar.code, min(1.0, budget / ctx.portfolio.cash))
+        if not ctx.buy(bar.code, min(1.0, budget / ctx.portfolio.cash)):
+            return False
         self._units += 1
         self._next_add = (self._next_add if pyramid else bar.close) + self.add_step * atr
         return True

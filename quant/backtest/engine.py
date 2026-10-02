@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from typing import Any
 
 import numpy as np
@@ -15,7 +16,7 @@ import pandas as pd
 
 from ..core.abstractions import (Broker, FactorAccessor, PortfolioView,
                                  RiskRule, Strategy, StrategyContext)
-from ..core.models import Bar, Order
+from ..core.models import Bar, Order, Side
 from ..core.portfolio import Portfolio
 from .metrics import compute_metrics
 from .risk import RiskChain
@@ -24,7 +25,7 @@ from .sim_broker import CostModel, SimBroker
 
 @dataclass
 class BacktestResult:
-    """回测结果：绩效指标 + 净值曲线 + 成交记录 + 风控拒单。"""
+    """回测结果：绩效指标 + 净值曲线 + 成交记录 + 拒单（风控拒绝与未成单意图）。"""
     metrics: dict[str, Any]
     equity_curve: list[dict]
     trades: list[dict]
@@ -90,13 +91,17 @@ class BacktestEngine:
         def equity(self, prices: dict[str, float]) -> float:
             return self._pf.equity(prices)
 
-    def submit(self, order: Order) -> None:
+    def submit(self, order: Order) -> bool:
         """订单提交入口（OrderSink 协议实现）：风控检查通过后转发给 Broker。
 
         时序保护：bar.code 尚未在 _today_bar 就绪时（例如多标的场景中策略
         在 on_bar(code_A) 里下单 code_B），不能直接 return——这会无声吞单，
         让用户在前端 / CLI 看到的"拒单数"为 0而察觉不到。改为记到 rejects，
         至少让异常暴露出来。
+
+        Returns:
+            True 表示订单已进入撮合通道；False 表示被风控拒绝或时序
+            异常（bar 未就绪），原因已记入拒单日志。
         """
         bar = self._today_bar.get(order.code)
         if bar is None:
@@ -105,10 +110,32 @@ class BacktestEngine:
                 "side": order.side.value,
                 "reason": "_today_bar 未就绪（多标的/时序异常）",
             })
-            return
+            return False
         if self.risk.check(order, self._view, bar) is not None:
-            return
+            return False
         self.broker.submit(order)
+        return True
+
+    def reject(self, code: str, side: Side, reason: str) -> None:
+        """未成单意图记录（OrderSink 协议实现）。
+
+        策略上下文在无法形成委托（无持仓 / T+1 冻结 / 不足一手等）时
+        调用本方法，与风控拒单共用同一条日志——"策略想交易但没下出去"
+        必须在拒单计数中可见，而不是静默消失后伪装成策略行为。
+        """
+        bar = self._today_bar.get(code)
+        self.risk.rejects.append({
+            "date": bar.trade_date if bar is not None else "",
+            "code": code, "side": side.value, "reason": reason,
+        })
+
+    def _equity(self) -> float:
+        """策略侧权益估值口径（ctx.equity() 的注入实现）。
+
+        与日终快照同一套三级取价兜底：当日有效收盘价 → 最近有效
+        收盘价 → 买入均价。估值基准由引擎维护，策略不自组价格字典。
+        """
+        return self.portfolio.equity(self._prices, self._last_close)
 
     # ── 数据规范化：统一 dt / trade_date / date 列，确保多频率兼容 ────────
     @staticmethod
@@ -145,7 +172,17 @@ class BacktestEngine:
 
     # ── 主循环：按交易日分组驱动日界，一天内按 dt 逐 bar 推进 ────────
     def run(self) -> BacktestResult:
+        # 运行态整体重建：引擎实例可重复 run（幂等）。上一轮的组合账本、
+        # 通道挂单、估值基准与拒单日志若不清空，会泄漏进下一轮并叠加出
+        # 静默错误的结果（持仓翻倍、拒单重复计数等）
+        self.portfolio = Portfolio(init_cash=self.init_cash)
+        self._view = self._PortfolioViewImpl(self.portfolio)
+        self.broker.reset()
+        self.risk.rejects.clear()
+        self.risk.reset_pending()
         self._today_bar = {}
+        self._prices = {}
+        self._last_close = {}
         # 预构建每标的完整收盘价数组（O(N) 一次性，N = 该标的总 bar 数）
         self._full_prices = {}
         for code, sub in self.bars.groupby("code", sort=False):
@@ -153,11 +190,15 @@ class BacktestEngine:
         self._history = {}  # code → (prices, dts, count)
 
         self.strategy.on_init(StrategyContext(
-            pd.Series(dtype=float), "", self._view, self, 0.0))
+            pd.Series(dtype=float), "", self._view, self,
+            0.0, equity_fn=self._equity))
 
         for _td, day_df in self.bars.groupby("trade_date", sort=True):
             # _normalize 已保证 trade_date 列为 str；str() 是防御性转换，兼容异构输入
             trade_date: str = str(_td)
+            # 日界清空：昨日 bar 不作为今日风控与撮合的依据（数据缺口的
+            # 标的当日无 bar 时，残留的昨日 bar 会冒充今日行情通过校验）
+            self._today_bar = {}
             self.portfolio.on_new_day()            # T+1 解禁（每个交易日仅一次）
             self.risk.reset_pending()              # 清空昨日委托追踪，防止跨日累积
             day_started: set[str] = set()          # 按 code 独立追踪 on_new_day 触发状态
@@ -168,7 +209,18 @@ class BacktestEngine:
         
                 # ① 撮合此前提交的订单（本 bar 开盘价 ± 滑点）
                 for fill in self.broker.settle(bar):
-                    if not self.portfolio.apply_fill(fill):
+                    if self.portfolio.apply_fill(fill):
+                        # 成交回冲日内委托占用：卖出回冲可卖量、买入按实际
+                        # 花费释放现金占用。不回冲的话，已成交部分会在
+                        # pending 里被"幽灵占用"，误拒同日后续委托
+                        if fill.order.side == Side.SELL:
+                            self.risk.settle_sell(fill.order.code,
+                                                  fill.filled_qty)
+                        else:
+                            self.risk.settle_buy(
+                                fill.filled_price * fill.filled_qty
+                                + fill.commission)
+                    else:
                         # 现金不足导致成交被跳过——记入拒单日志，避免静默丢失
                         self.risk.rejects.append({
                             "date": bar.trade_date, "code": fill.order.code,
@@ -190,8 +242,12 @@ class BacktestEngine:
                 dts_arr[cnt] = bar.dt
                 cnt += 1
                 self._history[bar.code] = (prices_arr, dts_arr, cnt)
-                self._prices[bar.code] = bar.close
-                self._last_close[bar.code] = bar.close       # 维护历史最近 close，供停牌日估值
+                # 价格护栏：停牌/脏数据的非正价或 NaN 不更新估值基准，
+                # 维持最近有效收盘价——组合层"当日价→最近价→均价"的
+                # 三级兜底只有在基准本身有效时才成立
+                if math.isfinite(bar.close) and bar.close > 0:
+                    self._prices[bar.code] = bar.close
+                    self._last_close[bar.code] = bar.close
         
                 # ③ 因子只读视图：iloc[:n] 切片，结构上排除未来行
                 accessor = (FactorAccessor(self._factor_dfs[bar.code].iloc[:cnt])
@@ -202,7 +258,7 @@ class BacktestEngine:
                     prices_arr[:cnt], index=dts_arr[:cnt])
                 ctx = StrategyContext(
                     hist_series, bar.dt, self._view, self,
-                    bar.close, factors=accessor)
+                    bar.close, factors=accessor, equity_fn=self._equity)
         
                 # ④ 日始钩子：每标的当日首根 bar 触发（撮合后、on_bar 前），
                 #    多标的时各 code 独立触发，避免只给第一只股票发 on_new_day

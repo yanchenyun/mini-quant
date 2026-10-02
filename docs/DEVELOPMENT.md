@@ -116,8 +116,10 @@ mini-quant/
 │   └── webapp/
 │       ├── server.py      FastAPI（只调 service）
 │       └── index.html     ECharts 前端
-├── tests/
-│   └── smoke_test.py     离线冒烟测试（合成行情全链路，改完代码必跑）
+├── tests/                   离线冒烟测试包（按架构层分模块，见 §9.1）
+│   ├── smoke_test.py        统一入口（仓库根目录执行 python tests/smoke_test.py）
+│   ├── helpers.py           合成行情构造器（make_bars / make_minute_bars）
+│   └── test_*.py            按层用例（core / backtest / strategy_factor / data / app）
 ├── tools/
 │   └── check_style.py       源码注释风格自检（markdown 语法 / 反引号 / emoji）
 ├── ReadMe.md             操作文档（启动 / 运维 / 技术栈）
@@ -176,9 +178,9 @@ mini-quant/
 | `Strategy` | ABC | 策略钩子 `on_init`/`on_bar`（必需）+ `on_new_day`（可选） | `strategy/` 下的内置策略（注册表自动发现） | 任意子类 |
 | `Factor` | ABC | 因子契约 `name`/`min_periods`/`compute` | `factor/builtin.py` 内置因子集 | 任意子类（注册即用） |
 | `FactorAccessor` | class | 因子只读视图（引擎逐 bar `iloc[:n]` 切片，防未来） | 引擎内部 | —— |
-| `Broker` | Protocol | 撮合通道 `submit`/`settle` | `SimBroker`（回测） | `QmtBroker`（实盘） |
+| `Broker` | Protocol | 撮合通道 `submit`/`settle`/`reset`（reset 清空运行态，引擎每轮 run 调用） | `SimBroker`（回测） | `QmtBroker`（实盘） |
 | `RiskRule` | ABC | 风控规则（责任链节点） | 4 条内置规则 | 新增子类即可 |
-| `OrderSink` | Protocol | 订单入口（策略只见它，不认识引擎） | 引擎自身实现 | —— |
+| `OrderSink` | Protocol | 订单入口：submit 受理并返回结果、reject 记录未成单意图 | 引擎自身实现 | —— |
 | `PortfolioView` | Protocol | 账户只读视图 | 引擎内部 `_PortfolioViewImpl` | —— |
 
 ### 3.3 StrategyContext —— 策略看到的全部世界
@@ -189,9 +191,14 @@ ctx.price            当前 bar 收盘价
 ctx.portfolio        账户只读视图（cash / position / equity）
 ctx.factor(name)     当前 bar 的因子值（NaN = 预热区）
 ctx.factor_history(name)  截至当前 bar 的因子值序列
+ctx.equity()         当前账户权益（估值基准由引擎维护，与日终快照同口径）
 ctx.buy(code, cash_ratio=0.95)   按现金比例市价买入（100 股向下取整）
 ctx.sell(code, ratio=1.0)        卖出可用仓位（仅 available，ratio>=1 直接清仓）
 ```
+
+`ctx.buy / ctx.sell` 均返回订单是否已提交（bool）：未提交的原因（无持仓 /
+T+1 冻结 / 不足一手 / 风控拒绝）记入拒单日志。用标志位记忆"已下单"的
+策略应以提交成功为准，否则意图记账会与实际状态脱节。
 
 策略代码**频率无关**——这是整个抽象设计最直接的收益：rolling 指标天然按 bar 计算
 （日线 MA20 = 月均线，5 分钟 MA20 = 日内 100 分钟均线）。
@@ -492,9 +499,10 @@ class YourSource:
   加入 `RiskChain` 默认规则集；或调用方通过 `BacktestEngine(risk_rules=[...])`
   注入（传 `None` 用默认集，传 `[]` 表示不做风控）。规则若需读链上状态
   （如当日委托量），重写 `attach` 保存上下文，链在装配时会调用它。
-- **切实盘**：实现 `Broker` 协议（`submit` + `settle`）的通道类，经
-  `BacktestEngine(broker=...)` 注入（缺省仍用 `SimBroker`）；策略与信号逻辑
-  代码 0 改动（LSP 的兑现）。
+- **切实盘**：实现 `Broker` 协议（`submit` + `settle` + `reset`）的通道类，
+  经 `BacktestEngine(broker=...)` 注入（缺省仍用 `SimBroker`）；策略与信号逻辑
+  代码 0 改动（LSP 的兑现）。`reset` 由引擎在每轮 run 开始时调用，有状态
+  的通道（挂单簿等）借它清空，保证引擎实例可重复运行。
 
 ### 8.5 扩展后验证清单
 
@@ -504,7 +512,8 @@ python -m quant.app.cli backtest ...  # 真实数据回归
 python -m quant.app.cli serve         # Web 端冒烟
 ```
 
-新增因子 / 策略时在 `tests/smoke_test.py` 加一组合成行情用例（见 §9.2）。
+新增因子 / 策略时在 tests 对应层模块加一组合成行情用例（见 §9.2 与
+smoke_test 入口的调用清单）。
 
 ### 8.6 源码注释风格（强制约定）
 
@@ -579,7 +588,7 @@ def fetch_bars(code: str, start: str) -> pd.DataFrame:
 
 ## 9. 测试体系
 
-### 9.1 覆盖矩阵（tests/smoke_test.py，离线、无外部依赖）
+### 9.1 覆盖矩阵（tests/ 包，离线、无外部依赖）
 
 | 用例 | 验证点 | 不可替代特性 |
 |---|---|---|
@@ -593,11 +602,14 @@ def fetch_bars(code: str, start: str) -> pd.DataFrame:
 | `test_broker_injection` | 通道注入：注入实现被真正调用（逐 bar 请求撮合、订单流入），缺省仍装配 SimBroker | LSP：换通道不改主循环 |
 | `test_risk_chain` | 风控链空规则语义（`[]` 表示无规则）、上下文装配时显式挂载、策略元数据漏赋值即 AttributeError | 责任链装配契约 + 策略元数据契约 |
 | `test_data_registry` | 数据源/频率清单单一来源：仓储表名、CLI choices、Web 校验三处同源派生，未知取值报错 | 消除重复清单（OCP 的数据源侧） |
+| `test_silent_failure_regressions` | 四类静默失败缺陷锁定：下单返回值留痕、海龟离场不闩锁、停牌零价不污染估值、卖出成交回冲 | 一次代码审查确认的缺陷回归 |
+| `test_engine_lifecycle` | ctx.equity() 与日终快照同口径、同一引擎重复 run 两轮一致、_today_bar 日界清空 | 引擎运行态所有权（可重跑） |
+| `test_akshare_segment_errors` | AKShare 分钟分段：全部失败聚合抛错、部分失败保留数据并在 stderr 留痕（mock，无网络） | 失败要响（fail-loud）契约 |
 
 **改完任何代码都先跑一遍 smoke_test。** 需真实网络或 Wind 终端的数据源侧
 验证见 ReadMe §6.2：裸 TCP 探测端口，或直接调适配器拉一小段。
 
-### 9.2 合成数据生成器（smoke_test 内置）
+### 9.2 合成数据生成器（tests/helpers.py）
 
 - `make_bars(code, days, start_price)`：合成日线（随机游走 + 季节项
   `0.15·sin(t/25)`），跳过首日（无 pre_close）。

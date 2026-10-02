@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 from ..core.models import Bar, Fill, Order, Side
@@ -47,6 +48,10 @@ class SimBroker:
     def submit(self, order: Order) -> None:
         self._pending.append((order, order.ttl_bars))
 
+    def reset(self) -> None:
+        """清空挂单簿（引擎每次 run 开始时调用，通道可随引擎重复运行）。"""
+        self._pending = []
+
     def settle(self, bar: Bar) -> list[Fill]:
         """以本 bar 开盘价撮合挂起的订单（日线=次一交易日；分钟=次一 bar）。
 
@@ -80,6 +85,8 @@ class SimBroker:
     def _try_fill(self, order: Order, bar: Bar) -> Fill | None | object:
         if not bar.tradable:
             return _SKIP   # 停牌/ST：保留订单，复牌后继续撮合（而非丢弃）
+        if not (math.isfinite(bar.open) and bar.open > 0):
+            return _SKIP   # 无效开盘价（脏数据）：不撮合，保留订单待下根 bar
         # 涨跌停：只有一字板才拒买/拒卖（全天封死，无成交机会）。
         # 开盘触板但盘中打开（非一字板）时，交由后续限价单逻辑处理。
         if bar.pre_close > 0:
