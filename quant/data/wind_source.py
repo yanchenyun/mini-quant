@@ -16,17 +16,20 @@ WindPy 是万得金融终端配套的 Python 接口，数据质量与覆盖度�
    datetime.date / datetime.datetime 对象给出（不是字符串），
    需要自行组装成 DataFrame。
 
-与 Baostock 的口径对齐（上层完全无感知）：
+与系统统一口径对齐（上层完全无感知）：
 
 - 复权：本系统 1=后复权 2=前复权 3=不复权，对应 Wind 的 PriceAdj=B/F/(空)。
 - 频率：本系统 1d / 5min / 15min / 30min / 60min，对应 Wind 的 wsd / wsi 加 BarSize。
 - 代码：本系统 sh.600519，对应 Wind 的 600519.SH。
 - 输出列：统一为 code/dt/trade_date/open/high/low/close/pre_close/volume/
-  amount/trade_status/is_st，Wind 原始结果组装后对齐这些列。
+  amount/trade_status/is_st/upper_limit/lower_limit，Wind 原始结果组装后
+  对齐这些列。涨跌停价取 Wind 的 up_hga / down_hga 字段（各板块幅度
+  不同的权威值，供撮合层精确判定一字板与成交价上/下限）；字段不可用
+  （如降级路径、指数类无涨跌停）时补 0，下游按"未知"回退估算。
 
-分钟线的 pre_close / trade_status / is_st：Wind 分钟序列不提供，
-按既有约定给安全默认（可交易、非 ST、昨收 0），由仓储层 LEFT JOIN 日线表
-回填真实昨收——与 BaostockSource 处理完全一致。
+分钟线的 pre_close / trade_status / is_st / 涨跌停价：Wind 分钟序列不
+提供，按既有约定给安全默认（可交易、非 ST、昨收与涨跌停价 0），由仓储层
+LEFT JOIN 日线表回填真实昨收与涨跌停价。
 
 字段降级：Wind 可请求的字段集合随终端版本与账号权限变化（例如指数没有
 换手率 turn）。因此把日线字段分成“全量”与“核心”两组：全量请求失败时
@@ -97,10 +100,15 @@ _ADJUST_MAP = {"1": "B", "2": "F", "3": ""}
 _FREQ_MAP = {"5min": 5, "15min": 15, "30min": 30, "60min": 60}
 
 # 字段定义
-# 日线"全量"字段（含换手率、涨跌幅、交易状态等附加信息）
+# 日线"全量"字段（含换手率、涨跌幅、交易状态、涨跌停价等附加信息）。
+# up_hga / down_hga 为 Wind 的涨停价 / 跌停价（各板块幅度不同的权威值）；
+# 若个别终端版本或品种不支持，全量请求失败会自动降级到核心字段重试，
+# 涨跌停随之缺失（输出 0，撮合层回退 pre_close 估算），不影响可用性。
 _DAILY_FIELDS = ["open", "high", "low", "close", "pre_close", "volume",
-                 "amt", "pct_chg", "turn", "trade_status"]
-# 日线"核心"字段（全量请求失败时的降级集合，任何品种都应可用）
+                 "amt", "pct_chg", "turn", "trade_status",
+                 "up_hga", "down_hga"]
+# 日线"核心"字段（全量请求失败时的降级集合，任何品种都应可用；
+# 不含涨跌停价——降级场景宁可回退估算，也不拉不到行情）
 _DAILY_CORE = ["open", "high", "low", "close", "pre_close", "volume", "amt"]
 
 # 分钟线字段（Wind 分钟序列不提供昨收 / 估值 / ST）
@@ -108,11 +116,13 @@ _MIN_FIELDS = ["open", "high", "low", "close", "volume", "amt"]
 _MIN_CORE = ["open", "high", "low", "close", "volume"]
 
 # Wind 字段 -> 统一列名
-_RENAME = {"amt": "amount"}
+_RENAME = {"amt": "amount", "up_hga": "upper_limit", "down_hga": "lower_limit"}
 
-# 需要转数值的列（缺失的自动补 0.0）
+# 需要转数值的列（缺失的自动补 0.0；涨跌停补 0 即"未知"，
+# 与 Bar.price_limits 的缺失语义对齐）
 _NUM_COLS = ["open", "high", "low", "close", "pre_close",
-             "volume", "amount", "pct_chg", "turn"]
+             "volume", "amount", "pct_chg", "turn",
+             "upper_limit", "lower_limit"]
 
 # 流水线出口的必需列：全量路径与降级路径都必须具备，出口处强校验（防静默缺列）
 _REQUIRED_COLS = ["open", "high", "low", "close", "volume"]
@@ -130,7 +140,7 @@ def _load_wind():
     except ImportError as exc:   # pragma: no cover - 取决于本机是否装 Wind
         raise ImportError(
             "未找到 WindPy。WindPy 随 Wind 金融终端分发、无法用 pip 安装；"
-            "请先安装并登录 Wind 金融终端，或改用 --source baostock。"
+            "请先安装并登录 Wind 金融终端。"
         ) from exc
     return w
 
@@ -215,7 +225,7 @@ def _winddata_to_frame(out, code: str) -> pd.DataFrame:
 
 def _finalize(df: pd.DataFrame, code: str, freq: str, adjust: str,
               minute: bool) -> pd.DataFrame:
-    """统一列归一：重命名 → 补缺失列 → 数值化 → 类型对齐（与 Baostock 口径一致）。"""
+    """统一列归一：重命名 → 补缺失列 → 数值化 → 类型对齐。"""
     if df.empty:
         return df
 
@@ -228,8 +238,11 @@ def _finalize(df: pd.DataFrame, code: str, freq: str, adjust: str,
     df["date"] = df["trade_date"]     # 向后兼容别名（统一输出列；日表时间列与引擎/Web 缺 dt 时的兜底列）
 
     if minute:
-        # Wind 分钟序列不含昨收；由仓储层 JOIN 日线表回填
+        # Wind 分钟序列不含昨收与涨跌停价；昨收由仓储层 JOIN 日线表回填，
+        # 涨跌停同理（JOIN 日线的 upper_limit / lower_limit）
         df["pre_close"] = 0.0
+        df["upper_limit"] = 0.0
+        df["lower_limit"] = 0.0
 
     # trade_status：Wind 返回的是中文描述（'交易' / '停牌'，经实测确认），
     # 不是数字！本系统口径为 1=可交易 / 0=不可交易，故按"是否含停牌"归一。
@@ -242,7 +255,7 @@ def _finalize(df: pd.DataFrame, code: str, freq: str, adjust: str,
     else:
         df["trade_status"] = 1        # 字段不可用（降级/分钟线）→ 安全默认：可交易
 
-    # is_st：Wind 未取该字段，给安全默认（BaostockSource 分钟线同口径）；
+    # is_st：Wind 未取该字段，给安全默认（缺失即按非 ST 处理）；
     # 仓储层如需精确 ST 标记，可在日线表侧统一补充
     df["is_st"] = 0
 
@@ -287,7 +300,7 @@ class WindSource:
     @staticmethod
     def fetch_bars(code: str, start: str, end: str,
                    freq: str = "1d", adjust: str = "2") -> pd.DataFrame:
-        """按频率拉取行情，返回统一列 DataFrame（与 BaostockSource 输出格式一致）。
+        """按频率拉取行情，返回统一列 DataFrame（格式见模块 docstring）。
 
         Args:
             code: 本系统证券代码（sh.600519 / si.801050），也兼容 Wind
@@ -299,9 +312,11 @@ class WindSource:
 
         Returns:
             统一列 DataFrame：code/dt/trade_date/date/open/high/low/close/
-            pre_close/volume/amount/trade_status/is_st/adjust_flag（附加列
-            视 Wind 字段可用性，缺失则省略）。code 列恒为本系统格式
-            （传入 801050.SI 时归一为 si.801050），保证入库口径一致。
+            pre_close/volume/amount/trade_status/is_st/upper_limit/
+            lower_limit/adjust_flag（附加列视 Wind 字段可用性，缺失则省略；
+            分钟线的涨跌停价与昨收为 0，由仓储层 JOIN 日线表回填）。
+            code 列恒为本系统格式（传入 801050.SI 时归一为 si.801050），
+            保证入库口径一致。
 
         Raises:
             ImportError: 本机未安装 WindPy（Wind 终端）。

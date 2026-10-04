@@ -15,7 +15,7 @@ import pandas as pd
 from quant.backtest.engine import BacktestEngine
 from quant.backtest.sim_broker import CostModel, SimBroker
 from quant.core.abstractions import Strategy, StrategyContext
-from quant.core.models import Bar, Order
+from quant.core.models import Bar, Order, Side
 from quant.factor import FactorEngine
 from quant.strategy.double_ma import DoubleMAStrategy
 from quant.strategy.trend import TurtleTrendStrategy
@@ -428,3 +428,113 @@ def test_invalid_price_signal_isolation() -> None:
     assert len(r.equity_curve) == len(bars)
     assert r.metrics["final_equity"] > 0
     print("无效价隔离用例通过 ✓")
+
+
+def _limit_bar(code: str, pre: float, px: float, low: float,
+               upper: float = 0.0, lower: float = 0.0):
+    """构造一根用于涨跌停判定的 bar（open=high=px，low 可单独指定）。"""
+    return Bar(code=code, dt="2025-06-10 09:35:00", trade_date="2025-06-10",
+               open=px, high=px, low=low, close=px, volume=1e6, pre_close=pre,
+               trade_status=1, is_st=0, upper_limit=upper, lower_limit=lower)
+
+
+def test_price_limit_authority() -> None:
+    """涨跌停价以数据源权威值为准（回归：曾用 pre_close × 固定 0.095 反推）。
+
+    旧实现下创业板（涨停 20%）出现两类失真，方向相反且都不报错：
+    1. 假拒单——涨停开盘后盘中打开（low 仍高于 10.95），被误判为一字板，
+       本可成交的买入被静默丢弃；
+    2. 假低价成交——盘中回落更深（low 跌破 10.95）时又按 min(base, 10.95)
+       成交，凭空造出比真实涨停价低约 8.75% 的成交价，系统性虚增回测收益。
+
+    本用例用创业板真实参数（前收 10、涨停 12、跌停 8）锁定修复后的行为。
+    """
+    pre, up, dn = 10.0, 12.0, 8.0
+
+    # 1) 一字涨停封死：全天 12.00，买不进
+    b = SimBroker(CostModel())
+    b.submit(Order(code="sz.300001", side=Side.BUY, quantity=100, price=None))
+    assert b.settle(_limit_bar("sz.300001", pre, 12.0, 12.0, up, dn)) == [], \
+        "一字涨停封死应拒买"
+
+    # 2) 涨停开盘、盘中打开到 11.50：可买，成交价应为涨停价 12.00（旧实现误拒）
+    b = SimBroker(CostModel())
+    b.submit(Order(code="sz.300001", side=Side.BUY, quantity=100, price=None))
+    fills = b.settle(_limit_bar("sz.300001", pre, 12.0, 11.50, up, dn))
+    assert len(fills) == 1, "盘中打开的涨停板应可成交（旧实现误判为一字板而拒单）"
+    assert abs(fills[0].filled_price - 12.0) < 0.01, \
+        f"成交价应为涨停价 12.00，实际 {fills[0].filled_price}"
+
+    # 3) 盘中回落更深（旧实现按 10.95 成交）：应仍以涨停价成交
+    b = SimBroker(CostModel())
+    b.submit(Order(code="sz.300001", side=Side.BUY, quantity=100, price=None))
+    fills = b.settle(_limit_bar("sz.300001", pre, 12.0, 10.80, up, dn))
+    assert len(fills) == 1
+    assert abs(fills[0].filled_price - 12.0) < 0.01, \
+        f"不得按估算阈值 10.95 成交（会虚增收益），实际 {fills[0].filled_price}"
+
+    # 4) 一字跌停封死：全天 8.00，卖不出
+    b = SimBroker(CostModel())
+    b.submit(Order(code="sz.300001", side=Side.SELL, quantity=100, price=None))
+    assert b.settle(_limit_bar("sz.300001", pre, 8.0, 8.0, up, dn)) == [], \
+        "一字跌停封死应拒卖"
+
+    # 5) 未提供权威值（0）时退回 pre_close × price_limit 估算——主板场景仍正确
+    b = SimBroker(CostModel())
+    b.submit(Order(code="sh.600000", side=Side.BUY, quantity=100, price=None))
+    assert b.settle(_limit_bar("sh.600000", 10.0, 11.0, 11.0)) == [], \
+        "权威值缺失时兜底估算仍应拒一字涨停买入"
+
+    # 6) 权威值贯通：行情帧的涨跌停列传入 Bar；列缺失的旧数据为 0（未知）
+    bars = make_bars(days=3).assign(upper_limit=11.0, lower_limit=9.0)
+    row = next(bars.itertuples())
+    bar = BacktestEngine._to_bar(row, str(row.dt)[:10])
+    assert bar.upper_limit == 11.0 and bar.lower_limit == 9.0, \
+        "行情帧的涨跌停列应贯通到 Bar 值对象"
+    row_old = next(make_bars(days=3).itertuples())
+    bar_old = BacktestEngine._to_bar(row_old, str(row_old.dt)[:10])
+    assert bar_old.upper_limit == 0.0 and bar_old.lower_limit == 0.0, \
+        "旧数据无涨跌停列时应为 0（未知，撮合层回退 pre_close 估算）"
+
+    print("涨跌停权威价用例通过 ✓")
+
+
+def test_price_limit_edge_semantics() -> None:
+    """限价单边界语义：price=None 是市价单，price=0.0 是限价单（不得混同）。
+
+    回归：撮合层曾用真值判断 order.price，导致 price=0.0 走市价分支。
+    """
+    assert Order(code="x", side=Side.BUY, quantity=100, price=None).price is None
+    assert Order(code="x", side=Side.BUY, quantity=100, price=0.0).price is not None
+
+    # price=0.0 的买单：bar.low(9.8) > 0 → 限价未触及，应保留订单而非成交
+    b = SimBroker(CostModel())
+    b.submit(Order(code="sh.600000", side=Side.BUY, quantity=100, price=0.0))
+    bar = Bar(code="sh.600000", dt="2025-06-10", trade_date="2025-06-10",
+              open=10.0, high=10.5, low=9.8, close=10.2, pre_close=10.0,
+              volume=1e6)
+    assert b.settle(bar) == [], "price=0.0 是限价单，应走限价分支（不成交）"
+
+    print("限价边界语义用例通过 ✓")
+
+
+def test_trade_date_preserved() -> None:
+    """trade_date 归属交易日不得被 dt 前 10 位无条件覆盖。
+
+    日线场景两者相等，看不出差异；跨日归属（如夜盘）时若被覆盖，
+    T+1 解禁与绩效统计周期会错位。
+    """
+    bars = make_bars(days=30)
+    # 人为制造 dt 与 trade_date 不一致的一行（模拟夜盘归属次日）
+    bars.loc[10, "dt"] = "2023-02-14 21:30:00"
+    bars.loc[10, "trade_date"] = "2023-02-15"
+    out = BacktestEngine._normalize(bars)
+    row = out[out["dt"] == "2023-02-14 21:30:00"].iloc[0]
+    assert row["trade_date"] == "2023-02-15", \
+        "数据源给定的归属交易日应被保留，而不是从 dt 截取"
+
+    # 缺失 trade_date 列时才从 dt 推导
+    bars2 = make_bars(days=10).drop(columns=["trade_date"])
+    out2 = BacktestEngine._normalize(bars2)
+    assert out2["trade_date"].tolist() == out2["dt"].str[:10].tolist()
+    print("trade_date 归属用例通过 ✓")

@@ -1,9 +1,7 @@
 # ── 数据源 ──────────────────────────────────────────────────────────
-# 项目内置两个数据源适配器，按需装其一即可：baostock / wind
-# （CLI 用 --source 选择，见 quant/data/__init__.py）
-baostock>=0.8.8
+# 项目内置 Wind 数据源适配器（CLI 用 --source wind，见 quant/data/__init__.py）
 # WindPy：随 Wind 金融终端分发，**无法通过 pip 安装**（import 名 WindPy，
-# 装好终端并登录后即可 --source wind；本机路径示例：
+# 装好终端并登录后即可使用；本机路径示例：
 # C:\Program Files (x86)\Wind\Wind.NET.Client\WindNET\x64）
 
 # ── 数据处理 / 存储 / 服务 ───────────────────────────────────────────

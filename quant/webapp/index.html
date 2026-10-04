@@ -35,10 +35,7 @@
 
 <div class="toolbar">
   <div class="field"><label>证券代码</label><select id="code"></select></div>
-  <div class="field"><label>频率</label><select id="freq" style="width:90px">
-    <option value="1d" selected>日线</option>
-    <option value="5min">5分钟</option>
-  </select></div>
+  <div class="field"><label>频率</label><select id="freq" style="width:90px"></select></div>
   <div class="field"><label>策略</label><select id="strategy" style="width:110px"></select></div>
   <span id="strategy_params" style="display:contents"></span>
   <div class="field"><label>开始日期</label><input id="start" value="2022-01-01"></div>
@@ -73,6 +70,18 @@ async function loadCodes() {
     const codes = await r.json();
     $('code').innerHTML = codes.map(c => `<option>${c}</option>`).join('');
   } catch (e) { $('status').textContent = '读取代码列表失败（数据库未就绪？）'; }
+}
+
+// 频率下拉与标签由 /api/freqs 动态渲染（新增频率前端零改动）
+let freqLabels = {};
+
+async function loadFreqs() {
+  try {
+    const r = await fetch('/api/freqs');
+    const freqs = await r.json();
+    $('freq').innerHTML = freqs.map(f => `<option value="${f.name}">${f.label}</option>`).join('');
+    freqLabels = Object.fromEntries(freqs.map(f => [f.name, f.label]));
+  } catch (e) { $('status').textContent = '读取频率列表失败'; }
 }
 
 // 策略下拉与参数输入框由 /api/strategies 动态渲染（新增策略前端零改动）
@@ -129,7 +138,7 @@ function render(data) {
   const buys = data.buys.map(b => { markArea.push([{ xAxis: b[0], itemStyle: { color: 'rgba(192,32,32,.04)' } }]); return b; });
   const sellIdx = {}; data.sells.forEach(s => sellIdx[s[0]] = s[3]);
 
-  const freqLabel = data.params.freq === '5min' ? '5分钟' : '日线';
+  const freqLabel = freqLabels[data.params.freq] || data.params.freq;
   const stratLabel = data.strat_label || data.params.strategy;
   const overlays = (k.overlays || []).map((o, i) => ({
     name: o.name, type: 'line', data: o.data, showSymbol: false,
@@ -194,6 +203,7 @@ $('run').onclick = async () => {
 
 window.onresize = () => { kchart.resize(); echart.resize(); };
 loadCodes();
+loadFreqs();
 loadStrategies();
 </script>
 </body>

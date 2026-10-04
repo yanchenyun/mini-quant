@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse
 
 from .. import __version__
 from ..app.service import get_repo, run_backtest
-from ..data.registry import available_freqs
+from ..data.registry import FREQS, available_freqs, default_freq
 from ..strategy import available_strategies, build_strategy, get_strategy
 
 WEB_DIR = Path(__file__).resolve().parent
@@ -39,6 +39,12 @@ def codes() -> list[str]:
         return get_repo().list_codes()
     except Exception as e:  # noqa: BLE001
         raise HTTPException(500, f"读取数据库失败: {e}") from e
+
+
+@app.get("/api/freqs")
+def freqs() -> list[dict[str, str]]:
+    """频率清单：前端据此渲染频率下拉（注册表驱动，新增频率前端零改动）。"""
+    return [{"name": f.name, "label": f.label} for f in FREQS]
 
 
 @app.get("/api/strategies")
@@ -69,7 +75,7 @@ def backtest(request: Request) -> dict[str, Any]:
     code, start = q.get("code"), q.get("start")
     end = q.get("end")
     freqs = available_freqs()
-    freq = q.get("freq", freqs[0])
+    freq = q.get("freq") or default_freq()
     strategy = q.get("strategy")
 
     if not code or not start:

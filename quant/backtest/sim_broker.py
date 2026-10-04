@@ -21,7 +21,7 @@ class CostModel:
     min_commission: float = 5.0        # 最低佣金
     stamp_tax: float = 0.0005          # 印花税（仅卖出）
     slippage: float = 0.002            # 滑点 0.2%（千2）
-    price_limit: float = 0.095         # 涨跌停近似阈值
+    price_limit: float = 0.095         # 涨跌停兜底幅度：仅当 bar 无权威涨跌停价时用于估算
 
     def commission(self, side: Side, amount: float) -> float:
         fee = amount * self.commission_rate
@@ -89,16 +89,16 @@ class SimBroker:
             return _SKIP   # 无效开盘价（脏数据）：不撮合，保留订单待下根 bar
         # 涨跌停：只有一字板才拒买/拒卖（全天封死，无成交机会）。
         # 开盘触板但盘中打开（非一字板）时，交由后续限价单逻辑处理。
-        if bar.pre_close > 0:
-            upper = bar.pre_close * (1 + self.cost.price_limit)
-            lower = bar.pre_close * (1 - self.cost.price_limit)
+        # 涨跌停价优先取数据源权威值（不同板块幅度不同），缺失才按价格上限估算。
+        upper, lower = bar.price_limits(self.cost.price_limit)
+        if upper > 0 and lower > 0:
             if order.side == Side.BUY and bar.open >= upper and bar.low >= upper:
                 return None   # 一字涨停：全天封死在涨停，买不进
             if order.side == Side.SELL and bar.open <= lower and bar.high <= lower:
                 return None   # 一字跌停：全天封死在跌停，卖不出
 
         # 限价单：整根 bar 的价格区间未触及限价 → 不成交，保留待下根 bar
-        if order.price:
+        if order.price is not None:
             if order.side == Side.BUY and bar.low > order.price:
                 return _SKIP    # 整根 bar 最低价都高于买限价，买不到
             if order.side == Side.SELL and bar.high < order.price:
@@ -107,10 +107,9 @@ class SimBroker:
         if order.side == Side.BUY:
             base = bar.open * (1 + self.cost.slippage)
             # 涨停开盘但盘中打开：成交价不能超过涨停价
-            if bar.pre_close > 0:
-                upper = bar.pre_close * (1 + self.cost.price_limit)
+            if upper > 0:
                 base = min(base, upper)
-            if order.price:
+            if order.price is not None:
                 # 限价单：开盘跳空高于限价但盘中回落触及 → 以限价成交
                 price = order.price if bar.open > order.price else min(order.price, base)
             else:
@@ -118,10 +117,9 @@ class SimBroker:
         else:
             base = bar.open * (1 - self.cost.slippage)
             # 跌停开盘但盘中打开：成交价不能低于跌停价
-            if bar.pre_close > 0:
-                lower = bar.pre_close * (1 - self.cost.price_limit)
+            if lower > 0:
                 base = max(base, lower)
-            if order.price:
+            if order.price is not None:
                 # 限价单：开盘跳空低于限价但盘中回升触及 → 以限价成交
                 price = order.price if bar.open < order.price else max(order.price, base)
             else:

@@ -33,7 +33,7 @@
 | ---- | --------------------------- | ---------------------------- | ------------------------------------------ |
 | 语言   | Python                      | 3.12                         | 量化生态无可替代                                   |
 | 数据处理 | pandas                      | ≥ 2.0                        | DataFrame 贯穿全链路                            |
-| 数据源  | Baostock / Wind   | ≥ 0.8.8 / 随终端       | 双源互备（无默认，`--source` 每次显式指定），输出列完全同构           |
+| 数据源  | Wind             | 随终端                       | 单源（无默认，`--source` 每次显式指定）；注册表机制保留，接入新源零入口改动    |
 | 存储   | MySQL 8（PyMySQL）            | ≥ 1.1                        | 本机或局域网均可；仓储接口隔离，换 Parquet+DuckDB 只动 data 层 |
 | 回测   | 自研事件驱动内核                    | —                            | 每一行都懂、可控；比 vn.py 轻、比 backtrader 透明         |
 | Web  | FastAPI + uvicorn + ECharts | ≥ 0.110 / ≥ 0.29 / 5.5 (CDN) | 无构建工具，原生 HTML/JS                           |
@@ -45,11 +45,11 @@
 pip install -r requirements.txt
 ```
 
-> ⚠️ **WindPy 例外**：随 Wind 金融终端分发、**不能 pip 安装**。只在本机装了
+> ⚠️ **WindPy 例外**：随 Wind 金融终端分发、**不能 pip 安装**。本系统数据源
 >   
-> Wind 终端的环境里可用（`import WindPy` 能找到即已就绪）；未装终端不影响
+> 仅 Wind 一家，只在本机装了 Wind 终端的环境里可用（`import WindPy` 能找到
 >   
-> baostock 源的使用。
+> 即已就绪）。
 
 
 
@@ -62,7 +62,7 @@ pip install -r requirements.txt
 | v0.1              | 日线回测核心      | 六层架构 + 双均线 + CLI                       |
 | v0.2              | 多频率 + A 股规则 | Bar 双时间字段 + freq 分表 + 5 分钟回测 + Web 控制台 |
 | v0.3              | 因子库 + 双数据源  | 因子 SSOT 内存即时算 + 声明式依赖 + 长表存储           |
-| v0.4 (Unreleased) | Wind 数据源 + 策略注册表 | 双源互备（接入 Wind、移除 AKShare）+ 策略/参数注册表驱动（新增策略零入口改动） |
+| v0.4 (Unreleased) | Wind 数据源 + 策略注册表 | 收敛为 Wind 单源（接入 Wind、移除 AKShare 与 Baostock）+ 策略/参数注册表驱动（新增策略零入口改动）+ 涨跌停权威价 + 分钟频率重采样派生（15/30/60min 免建表） |
 
 
 
@@ -121,7 +121,7 @@ backtest:
 
 ### 3.4 证券代码格式
 
-本系统口径（Baostock 风格，带交易所前缀）：沪市 `sh.600000`、深市 `sz.000001`。
+本系统口径（带交易所前缀）：沪市 `sh.600000`、深市 `sz.000001`。
   
 各数据源适配器自动转换，CLI / Web 层只认这个口径。
 
@@ -135,14 +135,12 @@ backtest:
 # ① 初始化库表（幂等：日线表 + 分钟表 + 因子表，重复执行无副作用）
 python -m quant.app.cli init-schema
 
-# ② 抓取日线入库（--source 必填；默认前复权；增量——自动从库里最新日期的次日开始续抓）
-python -m quant.app.cli ingest --code sh.600000 --start 2020-01-01 --source baostock
-
-# ②b 换数据源抓日线（需本机登录 Wind 终端）
+# ② 抓取日线入库（--source 必填；默认前复权；增量——自动从库里最新日期的次日开始续抓；
+#    需本机安装并登录 Wind 终端）
 python -m quant.app.cli ingest --code sh.600000 --start 2020-01-01 --source wind
 
-# ②c 抓取 5 分钟线（建议同时保留日线：分钟表的涨跌停基准依赖日线昨收关联）
-python -m quant.app.cli ingest --code sh.600000 --start 2025-01-01 --source baostock --freq 5min
+# ②b 抓取 5 分钟线（建议同时保留日线：分钟表的涨跌停与昨收基准依赖日线表关联）
+python -m quant.app.cli ingest --code sh.600000 --start 2025-01-01 --source wind --freq 5min
 
 # ③ 命令行回测（--strategy 必填；日线/分钟、双均线/因子/海龟策略，同一套代码）
 python -m quant.app.cli backtest --code sh.600000 --start 2021-01-01 --end 2025-12-31 --strategy double_ma --fast 5 --slow 20
@@ -177,7 +175,7 @@ python -m quant.app.cli serve --port 8000
 | 子命令               | 作用                                  | 是否需联网 |
 | ----------------- | ----------------------------------- | ----- |
 | `init-schema`     | 幂等建库建表（行情日表/分钟表/因子表）                | 否     |
-| `ingest`          | 增量抓取行情入库（数据源必填：baostock / wind） | 是     |
+| `ingest`          | 增量抓取行情入库（数据源必填：wind）    | 是     |
 | `compute-factors` | 计算因子并落库（因子必填；物化缓存，upsert 幂等）         | 否     |
 | `backtest`        | 运行回测并打印绩效                           | 否     |
 | `repair-dt`       | 修复分钟表历史脏时间戳（幂等）                     | 否     |
@@ -186,7 +184,7 @@ python -m quant.app.cli serve --port 8000
 ### 5.2 `ingest` 参数
 
 ```bash
-python -m quant.app.cli ingest --code sh.600000 --start 2020-01-01 --source baostock [options]
+python -m quant.app.cli ingest --code sh.600000 --start 2020-01-01 --source wind [options]
 ```
 
 | 参数         | 必填 | 默认   | 说明                                  |
@@ -195,7 +193,7 @@ python -m quant.app.cli ingest --code sh.600000 --start 2020-01-01 --source baos
 | `--start`  | ✅  | —    | 起始日期 `YYYY-MM-DD`                   |
 | `--end`    | —  | 今天   | 结束日期                                |
 | `--adjust` | —  | `2`  | 复权：`1` 后复权 / `2` 前复权 / `3` 不复权       |
-| `--freq`   | —  | `1d` | 频率名（1d 日线 / 5min 5 分钟线），可选值由数据层注册表动态生成        |
+| `--freq`   | —  | `1d` | 频率名（1d 日线 / 5min / 15min / 30min / 60min 分钟线），可选值由数据层注册表动态生成；15/30/60min 为派生频率（读取时从 5min 数据自动聚合，无需也不可单独 ingest） |
 | `--source` | ✅  | —    | 数据源（必填）：可选值由数据层注册表动态生成，`--help` 查看 |
 
 自动增量：从库中已有最新 bar 的次日开始续抓（库为空时用 `--start`）。
@@ -239,39 +237,35 @@ K 线 + 策略辅助线 + 买卖点 + 净值对比 + 指标卡片 + 成交明细
 
 ---
 
-## 6. 数据源选择与网络问题
+## 6. 数据源与网络问题
 
-### 6.1 双源对比
+### 6.1 数据源
 
-| 数据源            | 费用        | 前置条件                  | 特点                                              |
-| -------------- | --------- | --------------------- | ----------------------------------------------- |
-| `baostock`      | 免费        | 无                     | 稳定；走**裸 TCP 直连** `www.baostock.com:10030`，不支持代理 |
-| `wind`         | 需 Wind 账号 | 本机安装并**登录 Wind 金融终端** | 数据质量与覆盖度最优；走本地终端，完全不碰公网                         |
+| 数据源    | 费用        | 前置条件                  | 特点                              |
+| ------ | --------- | --------------------- | -------------------------------- |
+| `wind` | 需 Wind 账号 | 本机安装并**登录 Wind 金融终端** | 数据质量与覆盖度最优；走本地终端，完全不碰公网；日线自带涨跌停价等权威字段 |
 
-两者输出列完全同构，上层零感知；数据源不设默认，每次 `ingest` 都用 `--source` 显式指定。
+数据源不设默认，每次 `ingest` 都用 `--source` 显式指定。历史上曾内置
+Baostock / AKShare 免费源，v0.4 起为收敛维护面先后移除（演进见 §2）；
+数据源注册表机制保留，接入新源 = 新增一个适配器文件 + 注册表一行。
 
 ### 6.2 数据源连通性自检
 
-数据源连不上时，用下面两条命令把范围缩到单点（都不写库，几秒出结果）：
+数据源连不上时，用下面这条命令把范围缩到单点（不写库，几秒出结果）：
 
 ```bash
-# Baostock：裸 TCP 探测 10030 端口，连上即网络层未被阻断
-python -c "import socket;s=socket.socket();s.settimeout(5);s.connect(('www.baostock.com',10030));print('10030 可达')"
-
 # Wind：直接调适配器拉一小段日线（需本机已登录 Wind 终端）
 python -c "from quant.data.wind_source import WindSource;print(WindSource.fetch_bars('sh.600519','2024-01-02','2024-01-05',freq='1d',adjust='2').shape)"
 ```
 
-baostock 侧的报错往往是假线索（客户端会吞掉连接异常），拿到端口可达性
-结论后再对照 §6.3 定位。
+Wind 走本地终端通信，连不上先确认终端已启动并登录；仍失败时对照 §6.3 定位。
 
 ### 6.3 常见网络故障
 
-| 现象                                                | 原因                                             | 处理                                                          |
-| ------------------------------------------------- | ---------------------------------------------- | ----------------------------------------------------------- |
-| baostock 报 `10002007 网络接收错误` / `WinError 10057`   | 10030 端口从当前网络不可达（baostock 客户端会吞掉连接异常，报错信息是假线索） | 按 §6.2 裸 TCP 探测确认 10030 端口可达性；不可达则换网络（如公司专线），或开代理 TUN 模式接管裸 TCP；或直接改用 `--source wind`（本地终端） |
-| `ModuleNotFoundError: No module named 'baostock'` | 当前 Python 环境没装                                 | `pip install -r requirements.txt`；确认没有用错解释器                 |
-| `import WindPy` 失败                                | 本机未装 Wind 终端，或当前环境不在 Wind 安装路径                 | 用装了 WindPy 的环境；或改用 baostock                          |
+| 现象                  | 原因                              | 处理                                        |
+| ------------------- | ------------------------------- | ----------------------------------------- |
+| `import WindPy` 失败  | 本机未装 Wind 终端，或当前环境不在 Wind 安装路径 | 安装并登录 Wind 金融终端；确认 Python 环境能找到 WindPy（终端的 WindNET 目录） |
+| Wind 连接失败（ErrorCode 非 0） | 终端未启动 / 未登录 / 账号无 Python API 权限 | 启动并登录终端；按 §6.2 自检；确认账号权限                 |
 
 ---
 

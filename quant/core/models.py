@@ -31,11 +31,34 @@ class Bar:
     amount: float = 0.0        # 成交金额（元）
     trade_status: int = 1      # 交易状态：1 正常交易，0 停牌
     is_st: int = 0             # 是否 ST：1 为 ST / *ST，0 为正常
+    upper_limit: float = 0.0   # 涨停价（权威值，由数据源填充；0 表示未知，回退按 pre_close 估算）
+    lower_limit: float = 0.0   # 跌停价（权威值，由数据源填充；0 表示未知，回退按 pre_close 估算）
 
     @property
     def tradable(self) -> bool:
         """是否可交易：排除停牌与 ST 标的。"""
         return self.trade_status == 1 and self.is_st != 1
+
+    def price_limits(self, fallback_pct: float) -> tuple[float, float]:
+        """返回本 bar 的（涨停价, 跌停价）。
+
+        优先使用数据源给出的权威值（upper_limit / lower_limit）——不同板块
+        涨跌停幅度不同（主板 10%、创业板/科创板 20%、北交所 30%、ST 5%），
+        用统一百分比反推会失真。仅当权威值缺失（<= 0）时，才按 fallback_pct
+        相对 pre_close 估算，作为降级兜底。
+
+        Args:
+            fallback_pct: 权威值缺失时的估算幅度，如 0.095。
+
+        Returns:
+            (涨停价, 跌停价)。两者均为 0 时表示无法判定（pre_close 也缺失）。
+        """
+        if self.upper_limit > 0 and self.lower_limit > 0:
+            return self.upper_limit, self.lower_limit
+        if self.pre_close > 0:
+            return (self.pre_close * (1 + fallback_pct),
+                    self.pre_close * (1 - fallback_pct))
+        return 0.0, 0.0
 
 
 @dataclass(frozen=True)

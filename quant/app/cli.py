@@ -1,7 +1,7 @@
 """CLI 入口：python -m quant.app.cli <command>
 
     python -m quant.app.cli init-schema
-    python -m quant.app.cli ingest  --code sh.600000 --start 2020-01-01 --source baostock
+    python -m quant.app.cli ingest  --code sh.600000 --start 2020-01-01 --source wind
     python -m quant.app.cli ingest  --code sh.600000 --start 2025-01-01 --source wind --freq 5min
     python -m quant.app.cli compute-factors --code sh.600000 --start 2024-01-01 --factors momentum_20
     python -m quant.app.cli backtest --code sh.600000 --start 2021-01-01 --strategy double_ma
@@ -24,16 +24,18 @@ import argparse
 import json
 
 from ..app.service import compute_factors, ingest_bars, run_backtest
-from ..data.registry import (available_freqs, available_sources, freq_help,
-                             source_help)
+from ..data.registry import (available_freqs, available_sources, default_freq,
+                             freq_help, source_help)
 from ..factor import available as available_factors
 from ..strategy import (available_strategies, build_strategy,
                         get_strategy)
 
-# 频率选项：取值来自数据层注册表；默认取注册表首项（当前为日线）
+# 频率选项：取值来自数据层注册表；默认频率显式取自 registry.default_freq()
+# （不用 list 首项——注册表条目重排时默认行为不应被静默改变）
 _FREQS = available_freqs()
-_FREQ_KW = {"default": _FREQS[0], "choices": _FREQS,
-            "help": f"{freq_help()}（默认 {_FREQS[0]}）"}
+_FREQ_DEFAULT = default_freq()
+_FREQ_KW = {"default": _FREQ_DEFAULT, "choices": _FREQS,
+            "help": f"{freq_help()}（默认 {_FREQ_DEFAULT}）"}
 
 
 def _add_strategy_args(parser: argparse.ArgumentParser) -> None:

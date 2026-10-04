@@ -1,6 +1,6 @@
 """时间戳归一工具：吸收各数据源的时间格式脏差异。
 
-baostock 分钟线实际返回 17 位纯数字串 'YYYYMMDDHHMMSSmmm'（含 3 位毫秒），
+历史数据源曾返回 17 位纯数字串 'YYYYMMDDHHMMSSmmm'（含 3 位毫秒），
 另有 'YYYY-MM-DDHH:MM:SS'（无空格）等形态；本工具统一归一为
 'YYYY-MM-DD HH:MM:SS'（毫秒丢弃——分钟级回测用不到）。
 
@@ -16,7 +16,7 @@ def norm_dt(s: str | None) -> str:
         return ""
     s = str(s).strip()
     if s.isdigit():
-        if len(s) == 17:   # YYYYMMDDHHMMSSmmm（baostock 分钟线，含毫秒）
+        if len(s) == 17:   # YYYYMMDDHHMMSSmmm（历史源的毫秒形态，含毫秒）
             return f"{s[0:4]}-{s[4:6]}-{s[6:8]} {s[8:10]}:{s[10:12]}:{s[12:14]}"
         if len(s) == 14:   # YYYYMMDDHHMMSS
             return f"{s[0:4]}-{s[4:6]}-{s[6:8]} {s[8:10]}:{s[10:12]}:{s[12:14]}"

@@ -144,7 +144,12 @@ class BacktestEngine:
         if "dt" not in df.columns:
             df["dt"] = df["date"].astype(str)
         df["dt"] = df["dt"].astype(str)
-        df["trade_date"] = df["dt"].str[:10]
+        # trade_date 优先采信数据源给定的归属交易日（夜盘/跨日归属等场景下
+        # dt 的日期部分不等于归属交易日）；缺失时才从 dt 前 10 位推导。
+        if "trade_date" not in df.columns:
+            df["trade_date"] = df["dt"].str[:10]
+        else:
+            df["trade_date"] = df["trade_date"].astype(str)
         if "date" not in df.columns:
             df["date"] = df["trade_date"]
         return df.sort_values(["dt", "code"]).reset_index(drop=True)
@@ -300,4 +305,8 @@ class BacktestEngine:
             amount=float(getattr(row, "amount", 0) or 0),
             trade_status=ts,
             is_st=int(getattr(row, "is_st", 0) or 0),
+            # 涨跌停权威价：列缺失或 NULL/NaN 时为 0 / NaN，price_limits
+            # 判 > 0 为假即回退 pre_close 估算——旧数据路径天然兼容
+            upper_limit=float(getattr(row, "upper_limit", 0) or 0),
+            lower_limit=float(getattr(row, "lower_limit", 0) or 0),
         )

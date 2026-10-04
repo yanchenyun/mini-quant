@@ -27,7 +27,8 @@ class BacktestSettings:
     min_commission: float = 5.0
     stamp_tax: float = 0.0005
     slippage: float = 0.002
-    price_limit: float = 0.095
+    price_limit: float = 0.095     # 涨跌停兜底幅度：仅当 bar 无权威涨跌停价时用于估算
+    adjust: str = "2"              # 复权方式：'1' 后复权 / '2' 前复权 / '3' 不复权
 
 
 @dataclass

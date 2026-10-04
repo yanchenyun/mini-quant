@@ -5,7 +5,8 @@
 > 合规提示：本平台仅限个人研究自用，不对外提供服务、不构成投资建议。
 >
 > 版本演进：v0.1 日线回测 → v0.2 多频率（5 分钟）+ Web → v0.3 因子库 + 双源
-> → v0.4（Unreleased）Wind 数据源 + 策略注册表 + 移除 AKShare。详细变更历史见 `git log`。
+> → v0.4（Unreleased）Wind 数据源 + 策略注册表 + 移除 AKShare / Baostock
+> （收敛为 Wind 单源）+ 涨跌停权威价。详细变更历史见 `git log`。
 
 ---
 
@@ -65,10 +66,10 @@
 | 原则 | 落地方式 |
 |---|---|
 | **S** 单一职责 | core(契约)/data(取数)/backtest(撮合)/strategy(信号)/factor(计算)/webapp(展示) 各司其职 |
-| **O** 开闭 | 新策略 / 新因子 / 新数据源 = 新增实现 + 在各自的注册表登记一行，入口代码 0 改动；新风控 = 1 个子类 + 责任链装配一处；新频率另需补齐仓储读写分派与建表 DDL（各频率列口径本就不同） |
+| **O** 开闭 | 新策略 / 新因子 / 新数据源 / 新频率 = 新增实现 + 在各自注册表登记一行，入口代码 0 改动（新频率的建表 DDL 与仓储分派亦由注册表自动派生）；新风控 = 1 个子类 + 责任链装配一处 |
 | **L** 里氏替换 | 换撮合通道只需实现同一 `Broker` 协议并经引擎 broker 参数注入：主循环与策略代码 0 修改（`SimBroker` 只是缺省实现） |
 | **I** 接口隔离 | 策略只见 `StrategyContext` 窄接口（history 只到当前 bar） |
-| **D** 依赖倒置 | 引擎 / 策略依赖 core 抽象；MySQL / Baostock / Wind 都是可替换插件 |
+| **D** 依赖倒置 | 引擎 / 策略依赖 core 抽象；MySQL / Wind 都是可替换插件 |
 
 ---
 
@@ -89,10 +90,11 @@ mini-quant/
 │   │   └── portfolio.py    记账本：现金 / 持仓 / 净值曲线（T+1、含费摊薄成本）
 │   ├── data/            数据层（core 抽象的实现）
 │   │   ├── registry.py        数据源与频率注册表（本层清单单一来源：
-│   │   │                     数据源延迟导入、频率带行情表名）
-│   │   ├── baostock_source.py  Baostock 适配器（1d/5/15/30/60min）
-│   │   ├── wind_source.py      Wind 适配器（需本机 Wind 终端；延迟导入 + 字段降级）
-│   │   ├── mysql_repo.py      仓储：freq 分表 ods_d + ods_mi + 因子长表
+│   │   │                     数据源延迟导入、频率带行情表名与粒度）
+│   │   ├── wind_source.py      Wind 适配器（需本机 Wind 终端；延迟导入 + 字段降级 +
+│   │   │                     涨跌停价 up_hga/down_hga 权威字段）
+│   │   ├── mysql_repo.py      仓储：freq 分表（注册表派生）+ 因子长表；
+│   │   │                     分钟读取 JOIN 日线回填昨收/状态/涨跌停
 │   │   └── timeutil.py        时间戳归一（norm_dt：识别 17 位毫秒串等 5 种形态）
 │   ├── factor/          因子层（纯计算不碰存储）
 │   │   ├── base.py       注册表：register / get / available
@@ -141,7 +143,7 @@ mini-quant/
 | `backtest/engine.py` | 事件驱动引擎 | 按 `trade_date` 分组驱动日界；预构建 numpy 数组消除 O(n²)；`submit` 时序异常记 rejects 不静默吞单；撮合通道经 broker 参数注入；无效收盘价护栏（history 记 NaN、估值维持最近有效价） |
 | `backtest/sim_broker.py` | 模拟撮合（缺省通道） | 信号次一 bar 开盘价成交；一字板拒单；限价单触及成交；挂单 TTL 默认 1（当日有效） |
 | `backtest/risk.py` | 风控责任链 | 顺序即优先级；`_pending_sell` 同日卖出防重；`rules=None` 用默认集、`[]` 表示无规则 |
-| `backtest/metrics.py` | 绩效纯函数 | 全部由净值曲线 + 成交记录推导；`periods_per_year` 参数化 |
+| `backtest/metrics.py` | 绩效纯函数 | 全部由净值曲线 + 成交记录推导；`periods_per_year` 参数化（引擎按交易日快照，故恒为 252，与行情频率无关） |
 | `app/service.py` | 服务层 | CLI 与 Web 共用装配地；因子依赖解析 + 预热加载 |
 | `webapp/server.py` | Web 后端 | 只调 service；基准曲线按 bar 粒度生成与 K 线 x 轴等长 |
 
@@ -159,20 +161,23 @@ mini-quant/
 
 ```python
 ["code", "dt", "trade_date", "open", "high", "low", "close",
- "pre_close", "volume", "amount", "trade_status", "is_st"]
+ "pre_close", "volume", "amount", "trade_status", "is_st",
+ "upper_limit", "lower_limit"]
 ```
 
-- `code`：本系统口径 `sh.600000` / `sz.000001`（Baostock 风格，带交易所前缀）。
+- `code`：本系统口径 `sh.600000` / `sz.000001`（带交易所前缀）。
 - `dt`：bar 时刻。日线 `YYYY-MM-DD`；分钟 `YYYY-MM-DD HH:MM:SS`。
 - `trade_date`：归属交易日，恒为 `YYYY-MM-DD`。
 - `adjust_flag`：复权标记 1=后复权 2=前复权（默认） 3=不复权。
 - `trade_status`：1 正常交易 0 停牌；`is_st`：1 ST 0 正常。
+- `upper_limit` / `lower_limit`：涨跌停权威价（Wind 日线填充；0 或缺失
+  表示未知，撮合层回退 pre_close × price_limit 估算）。
 
 ### 3.2 接口契约矩阵
 
 | 接口 | 类型 | 职责 | 当前实现 | 可替换方向 |
 |---|---|---|---|---|
-| `MarketDataSource` | Protocol | 外部行情源 | `BaostockSource` / `WindSource` | Tushare 等 |
+| `MarketDataSource` | Protocol | 外部行情源 | `WindSource` | Tushare 等 |
 | `DataRepository` | Protocol | 本地行情仓储（四方法必备契约） | `MySQLBarRepo` | Parquet + DuckDB |
 | `Strategy` | ABC | 策略钩子 `on_init`/`on_bar`（必需）+ `on_new_day`（可选） | `strategy/` 下的内置策略（注册表自动发现） | 任意子类 |
 | `Factor` | ABC | 因子契约 `name`/`min_periods`/`compute` | `factor/builtin.py` 内置因子集 | 任意子类（注册即用） |
@@ -228,7 +233,7 @@ def fetch_bars(code, start, end, freq="1d", adjust="2") -> pd.DataFrame
 | 4 | 因子 SSOT：回测内存即时算，落库仅物化缓存 | 因子逻辑只有 `Factor.compute` 一份，规避"库里旧口径 vs 回测新口径"漂移 |
 | 5 | freq 分表（`ods_d` / `ods_mi` / `dwd_factor_value_i`） | 字段集/唯一键天然不同；分钟表 LEFT JOIN 日线回填涨跌停基准 |
 | 6 | 订单次一 bar 开盘价撮合 | 防"先见收盘价后成交"的未来函数；限价单整根 bar 区间触及即成交 |
-| 7 | 涨跌停基准 = 日线昨收 `pre_close`（±9.5% 近似） | 分钟 bar 的上一根收盘不能作基准，否则日内累计涨幅被误判涨停 |
+| 7 | 涨跌停价取 `Bar.upper_limit` / `lower_limit`（权威值） | 各板块幅度不同（主板 10%、创业板/科创板 20%、北交所 30%、ST 5%），用固定百分比反推会双向失真：涨停打开被误拒、回落时按估算阈值成交而虚增收益。仅在权威值缺失时回退 `pre_close × price_limit` |
 | 8 | 风控责任链顺序：停牌ST → 手数 → 现金 → T+1 | 先排除"不能做的"再校验"能不能做"，fail-fast 且拒单日志可读 |
 | 9 | 风控估算口径对齐撮合（`open × (1+滑点+佣金率)` 缓冲） | 跳空时估算不低估；撮合侧 `apply_fill` 现金不足再兜底拒单（双保险） |
 | 10 | 同日卖出防重（`RiskChain._pending_sell` 追踪） | `available` 次日 bar 才扣减，同日多笔卖单须累计校验 |
@@ -323,7 +328,7 @@ cli.py main() 解析参数
 |---|---|---|---|
 | `code` / `start` | str | ✅必填 | 证券代码 / 起始日期 |
 | `end` | str | 今天 | 结束日期 |
-| `freq` | str | 注册表首项 | 频率名（可选值与默认值均来自 `data.registry` 的频率注册表） |
+| `freq` | str | `1d` | 频率名（可选值来自 `data.registry`；默认值为显式常量 `default_freq()`，不随注册表顺序变化） |
 | `strategy` | str | ✅必填 | 策略名（可选值 = 注册表全部策略；不设默认，避免静默跑错策略） |
 | `--`（其余） | 随策略 | 规格默认值 | 所选策略的参数（名称 / 类型 / choices 见 `/api/strategies`） |
 
@@ -347,9 +352,9 @@ from quant.data.registry import get_source
 from quant.strategy import build_strategy
 
 repo = get_repo()                          # 仓储工厂 → MySQLBarRepo
-SrcCls = get_source("baostock")            # 数据源工厂（返回类，方法均为 @staticmethod）
+SrcCls = get_source("wind")                # 数据源工厂（返回类，方法均为 @staticmethod）
 n = ingest_bars("sh.600000", "2020-01-01", # 增量抓取入库（幂等），返回入库行数
-                source="baostock")         # source 必填关键字参数
+                source="wind")             # source 必填关键字参数
 compute_factors("sh.600000", "2024-01-01",
                 names=["momentum_20"])     # 因子计算落库（names 必填，物化缓存，upsert 幂等）
 result, bars = run_backtest(               # 取数 → 跑回测，返回 (结果, 行情帧)
@@ -389,7 +394,7 @@ result, bars = run_backtest(               # 取数 → 跑回测，返回 (结�
 | 新因子 | `quant/factor/builtin.py` 追加类 + register | 1 类 + 1 行 |
 | 新数据源 | `quant/data/<新源>.py` + `data/registry.py` 的 SOURCES 加一行 | 1 新文件 + 1 行；CLI / 服务层取源 / Web 校验自动跟随 |
 | 换存储 | 重写 `DataRepository` 实现 + `service.get_repo` | 1 文件 + 1 行 |
-| 新频率 | `data/registry.py` 的 FREQS 加一行 + 适配器频率映射 + 仓储读写分派 + DDL | 1 行 + 2 处分派 + DDL |
+| 新频率 | `data/registry.py` 的 FREQS 加一行 + 适配器频率映射加一行 | 2 行；派生频率（derived_from 指向 5min）零存储改动、读取自动聚合，有独立表的频率 DDL 与仓储分派自动派生 |
 | 新风控 | `risk.py` 追加子类 + 加入 `RiskChain` 默认规则集 | 1 类 + 1 行 |
 | 切实盘 | 新建实现 `Broker` 协议的通道类 + `BacktestEngine(broker=...)` 注入 | 1 新文件 + 1 行注入 |
 
@@ -490,10 +495,13 @@ class YourSource:
 - **换存储**（如 Parquet + DuckDB）：实现 `DataRepository` 四方法
   （`save_bars` / `load_bars` / `latest_bar_time` / `list_codes`），
   `service.get_repo` 按环境变量分发。
-- **新频率**（15/30/60min）：`data/registry.py` 的 FREQS 加一行（表名随之
-  进入 `mysql_repo.TABLES`）+ 适配器的频率映射加一行 + `mysql_repo` 的读写
-  分派各加一个分支 + DDL 追加建表（`init-schema` 幂等建表）。取数 SQL 与列
-  口径因频率而异，这部分无法由清单取代。
+- **新频率**：`data/registry.py` 的 FREQS 加一行。分钟粒度优先声明为派生频率
+  （`derived_from="5min"`）——原始分钟数据只存 5 分钟一张表（ODS 规范口径），
+  更粗粒度读取时由仓储层从 5 分钟数据重采样聚合（`mysql_repo._aggregate_bars`：
+  钟表网格切槽防缺 bar 漂移、60min 按 09:30-10:30 / 10:30-11:30 / 13:00-14:00 /
+  14:00-15:00 的 A 股惯例边界），不建表不落库、`ingest` 会被显式拒绝。
+  只有当新频率需要自己的独立表（如日线口径差异）时，建表 DDL 与仓储读写
+  分派才会自动派生。两者都另需适配器的频率映射支持该频率。
 - **新风控**：继承 `RiskRule` 实现 `check`（返回 None 放行，否则返回拒绝原因），
   加入 `RiskChain` 默认规则集；或调用方通过 `BacktestEngine(risk_rules=[...])`
   注入（传 `None` 用默认集，传 `[]` 表示不做风控）。规则若需读链上状态
@@ -666,12 +674,13 @@ def fetch_bars(code: str, start: str) -> pd.DataFrame:
 | # | 坑 | 现状 / 对策 |
 |---|---|---|
 | 1 | SQL `BETWEEN` 对 None：`end` 未传时查空 | service 层默认补今天 |
-| 2 | baostock 分钟时间戳是 17 位毫秒数字串 | 入库前 `norm_dt` 归一 + `repair-dt` 命令幂等修复历史脏行（双保险） |
+| 2 | 早期数据源（Baostock）的分钟时间戳是 17 位毫秒数字串（库中仍有存量脏行） | 入库前 `norm_dt` 归一 + `repair-dt` 命令幂等修复历史脏行（双保险） |
 | 3 | 分钟查询 end 边界字符串比较丢当日数据 | 仓储层自动放宽到 23:59:59 |
 | 4 | Web benchmark 与 K 线 x 轴错位 | 基准按 bar 粒度生成（设计决策 #12） |
 | 5 | Wind `w.wsd` 返回**大写**字段名（请求 `open` 回 `OPEN`，ErrorCode 仍为 0）+ `trade_status` 返回**中文**（`交易`/`停牌`）而非数字 | 适配器统一 `lower()` 归一 + 中文状态按"是否含停牌"归一（fail-open：未知值视为可交易）+ 出口必需列强校验（防坏数据静默入库） |
 | 6 | `__pycache__` 残留导致改动不生效 | 已设 `PYTHONDONTWRITEBYTECODE=1` 全局禁用 |
 | 7 | 停牌日行情的 0 价混入信号链路（动量算出 -100% 与 +inf、唐奇安下轨被砸穿为 0、均线塌陷） | 引擎 history 写入与 FactorEngine 输入双侧按 NaN 语义隔离无效价（估值护栏此前已修，两处共用同一判据：非正或 NaN 即无效） |
+| 8 | 用固定百分比（±9.5%）反推涨跌停价：创业板/科创板（±20%）、ST（±5%）下双向失真——涨停打开被误拒单、回落时按估算阈值成交而虚增收益 | Bar 携带数据源权威涨跌停价（Wind 日线 up_hga/down_hga → upper_limit/lower_limit 列入库，分钟线 JOIN 日线回填），仅权威值缺失时回退 pre_close × price_limit 估算 |
 
 ---
 
@@ -702,5 +711,5 @@ CI + 质量门禁（ruff + mypy strict 仅对 core/）；Web 分钟 K 线按日�
 | 未来函数（回测虚高） | 四道保险 + 冒烟测试逐点断言锁定 |
 | 过拟合 | 样本外验证、参数敏感性分析、寻优结果打折评估 |
 | 前复权历史漂移 | 切后复权双份存储 |
-| 数据源单点 | 双源互备（baostock / wind），`--source` 切换 |
+| 数据源单点（当前仅 Wind，依赖本机终端） | 数据源注册表机制保留：接入新源 = 1 个适配器文件 + 注册表 1 行，入口零改动；`--source` 每次显式指定 |
 | 文档腐化 | 大版本提交时同步更新两份文档 |
