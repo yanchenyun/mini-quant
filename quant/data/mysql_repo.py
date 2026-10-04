@@ -45,7 +45,7 @@ CREATE TABLE IF NOT EXISTS `ods`.`{table}` (
   `close` decimal(10,4) DEFAULT NULL COMMENT '收盘价',
   `low` decimal(10,4) DEFAULT NULL COMMENT '最低价',
   `high` decimal(10,4) DEFAULT NULL COMMENT '最高价',
-  `volume` bigint DEFAULT NULL COMMENT '成交量（单位：股，累计值）',
+  `volume` bigint DEFAULT NULL COMMENT '成交量（单位：股，当根口径——Wind 分钟序列为该 bar 内成交量，当日各根之和等于日线量）',
   `amount` decimal(18,4) DEFAULT NULL COMMENT '成交额',
   `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '数据插入时间（自动填充当前时间）',
   `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '数据更新时间（更新时自动刷新）',
