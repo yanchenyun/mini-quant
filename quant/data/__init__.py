@@ -10,7 +10,8 @@ amount/trade_status/is_st/upper_limit/lower_limit）；对下吸收各数据源 
 - wind_source      Wind（万得）数据源适配器（需本机安装并登录 Wind 终端）：
                   WindPy 延迟导入、代码格式转换（sh.600519 ↔ 600519.SH）、
                   wsd/wsi 频率分发、字段降级容错、连接幂等复用、
-                  涨跌停价（up_hga/down_hga）等日线附加字段。
+                  涨跌停价（maxup/maxdown 原始价口径，幅度法换算对齐
+                  复权行情）等日线附加字段。
 - mysql_repo       MySQL 行情仓储（实现 DataRepository 协议）：freq 分表
                   由注册表派生（日线 ods_d_stock_quotation_i + 5 分钟表，
                   15/30/60 分钟为派生频率不建表、读取时由 5 分钟聚合），

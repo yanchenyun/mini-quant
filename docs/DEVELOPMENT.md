@@ -92,7 +92,7 @@ mini-quant/
 │   │   ├── registry.py        数据源与频率注册表（本层清单单一来源：
 │   │   │                     数据源延迟导入、频率带行情表名与粒度）
 │   │   ├── wind_source.py      Wind 适配器（需本机 Wind 终端；延迟导入 + 字段降级 +
-│   │   │                     涨跌停价 up_hga/down_hga 权威字段）
+│   │   │                     涨跌停 maxup/maxdown 权威值，幅度法对齐复权口径）
 │   │   ├── mysql_repo.py      仓储：freq 分表（注册表派生）+ 因子长表；
 │   │   │                     分钟读取 JOIN 日线回填昨收/状态/涨跌停
 │   │   └── timeutil.py        时间戳归一（norm_dt：识别 17 位毫秒串等 5 种形态）
@@ -680,7 +680,7 @@ def fetch_bars(code: str, start: str) -> pd.DataFrame:
 | 5 | Wind `w.wsd` 返回**大写**字段名（请求 `open` 回 `OPEN`，ErrorCode 仍为 0）+ `trade_status` 返回**中文**（`交易`/`停牌`）而非数字 | 适配器统一 `lower()` 归一 + 中文状态按"是否含停牌"归一（fail-open：未知值视为可交易）+ 出口必需列强校验（防坏数据静默入库） |
 | 6 | `__pycache__` 残留导致改动不生效 | 已设 `PYTHONDONTWRITEBYTECODE=1` 全局禁用 |
 | 7 | 停牌日行情的 0 价混入信号链路（动量算出 -100% 与 +inf、唐奇安下轨被砸穿为 0、均线塌陷） | 引擎 history 写入与 FactorEngine 输入双侧按 NaN 语义隔离无效价（估值护栏此前已修，两处共用同一判据：非正或 NaN 即无效） |
-| 8 | 用固定百分比（±9.5%）反推涨跌停价：创业板/科创板（±20%）、ST（±5%）下双向失真——涨停打开被误拒单、回落时按估算阈值成交而虚增收益 | Bar 携带数据源权威涨跌停价（Wind 日线 up_hga/down_hga → upper_limit/lower_limit 列入库，分钟线 JOIN 日线回填），仅权威值缺失时回退 pre_close × price_limit 估算 |
+| 8 | 用固定百分比（±9.5%）反推涨跌停价：创业板/科创板（±20%）、ST（±5%）下双向失真——涨停打开被误拒单、回落时按估算阈值成交而虚增收益 | Bar 携带数据源权威涨跌停价（Wind 日线 maxup/maxdown 为原始价口径，按 幅度=maxup/原始昨收 换算对齐复权行情后以 upper_limit/lower_limit 列入库，分钟线 JOIN 日线回填），仅权威值缺失时回退 pre_close × price_limit 估算 |
 
 ---
 

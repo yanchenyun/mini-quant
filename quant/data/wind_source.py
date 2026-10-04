@@ -23,8 +23,10 @@ WindPy 是万得金融终端配套的 Python 接口，数据质量与覆盖度�
 - 代码：本系统 sh.600519，对应 Wind 的 600519.SH。
 - 输出列：统一为 code/dt/trade_date/open/high/low/close/pre_close/volume/
   amount/trade_status/is_st/upper_limit/lower_limit，Wind 原始结果组装后
-  对齐这些列。涨跌停价取 Wind 的 up_hga / down_hga 字段（各板块幅度
-  不同的权威值，供撮合层精确判定一字板与成交价上/下限）；字段不可用
+  对齐这些列。涨跌停价取 Wind 的 maxup / maxdown 字段（交易所权威值）——
+  该两字段始终为原始价口径、不随 PriceAdj 复权，故以幅度法换算对齐：
+  涨停幅度 = maxup/原始昨收 - 1（天然涵盖主板 10% / 创业板科创板 20% /
+  ST 5% 等全部规则），涨跌停价(复权) = 昨收(复权) × (1 ± 幅度)；字段不可用
   （如降级路径、指数类无涨跌停）时补 0，下游按"未知"回退估算。
 
 分钟线的 pre_close / trade_status / is_st / 涨跌停价：Wind 分钟序列不
@@ -100,23 +102,29 @@ _ADJUST_MAP = {"1": "B", "2": "F", "3": ""}
 _FREQ_MAP = {"5min": 5, "15min": 15, "30min": 30, "60min": 60}
 
 # 字段定义
-# 日线"全量"字段（含换手率、涨跌幅、交易状态、涨跌停价等附加信息）。
-# up_hga / down_hga 为 Wind 的涨停价 / 跌停价（各板块幅度不同的权威值）；
-# 若个别终端版本或品种不支持，全量请求失败会自动降级到核心字段重试，
-# 涨跌停随之缺失（输出 0，撮合层回退 pre_close 估算），不影响可用性。
+# 日线"全量"字段（含换手率、涨跌幅、交易状态等附加信息）。
+# 若个别终端版本或品种不支持部分附加字段，全量请求失败会自动降级到核心
+# 字段重试，附加信息随之缺失（交易状态等按安全默认处理），不影响可用性。
 _DAILY_FIELDS = ["open", "high", "low", "close", "pre_close", "volume",
-                 "amt", "pct_chg", "turn", "trade_status",
-                 "up_hga", "down_hga"]
-# 日线"核心"字段（全量请求失败时的降级集合，任何品种都应可用；
-# 不含涨跌停价——降级场景宁可回退估算，也不拉不到行情）
+                 "amt", "pct_chg", "turn", "trade_status"]
+# 日线"核心"字段（全量请求失败时的降级集合，任何品种都应可用）
 _DAILY_CORE = ["open", "high", "low", "close", "pre_close", "volume", "amt"]
+
+# 涨跌停价专用字段（不复权口径二次请求）。
+# maxup / maxdown 为 Wind 的当日涨停价 / 跌停价（交易所权威值，适用范围
+# 覆盖股票基金期货商品），但它们始终是原始价口径、不随 PriceAdj 复权，
+# 因此不能与复权行情直接比较，必须先换算成幅度：
+#     涨停幅度 = maxup / 昨收(原始) - 1
+# 该幅度天然涵盖主板 10% / 创业板科创板 20% / ST 5% 等全部规则与历史改制，
+# 再映射回行情复权口径：涨跌停价(复权) = 昨收(复权) × (1 ± 幅度)。
+_DAILY_LIMIT_FIELDS = ["pre_close", "maxup", "maxdown"]
 
 # 分钟线字段（Wind 分钟序列不提供昨收 / 估值 / ST）
 _MIN_FIELDS = ["open", "high", "low", "close", "volume", "amt"]
 _MIN_CORE = ["open", "high", "low", "close", "volume"]
 
 # Wind 字段 -> 统一列名
-_RENAME = {"amt": "amount", "up_hga": "upper_limit", "down_hga": "lower_limit"}
+_RENAME = {"amt": "amount"}
 
 # 需要转数值的列（缺失的自动补 0.0；涨跌停补 0 即"未知"，
 # 与 Bar.price_limits 的缺失语义对齐）
@@ -340,7 +348,13 @@ class WindSource:
     @staticmethod
     def _fetch_daily(w, wind_code: str, start: str, end: str,
                      adjust: str) -> pd.DataFrame:
-        """日线：先请求全量字段，失败降级到核心字段（如指数无 turn）。"""
+        """日线：先请求全量字段，失败降级到核心字段（如指数无 turn）。
+
+        涨跌停价以不复权口径二次请求（pre_close/maxup/maxdown），按幅度
+        换算对齐到行情复权口径。二次请求任一环节失败（指数无涨跌停、
+        终端不支持、两次返回行数不齐）都只放弃涨跌停两列——列缺失入库
+        NULL，撮合层回退 pre_close 估算，不抛错不阻塞行情主流程。
+        """
         opts = _options(adjust)
         out = w.wsd(wind_code, ",".join(_DAILY_FIELDS), start, end, opts)
         if out.ErrorCode != 0:
@@ -351,7 +365,24 @@ class WindSource:
                 f"Wind wsd 拉取失败（{wind_code} {start}~{end}）: "
                 f"ErrorCode={out.ErrorCode} {out.Data}"
             )
-        return _winddata_to_frame(out, wind_code)
+        df = _winddata_to_frame(out, wind_code)
+
+        # 涨跌停：原始昨收 + 权威涨跌停价 -> 幅度 -> 映射回复权口径。
+        # 幅度 = maxup/原始昨收 - 1（自动涵盖各板块幅度与 ST 差异）；
+        # 行情侧昨收或幅度为 NaN（停牌日等）时结果自然为 NaN，
+        # 经 _finalize 的数值化补 0 后即"未知"语义，撮合层安全回退。
+        try:
+            raw = w.wsd(wind_code, ",".join(_DAILY_LIMIT_FIELDS), start, end, "")
+            if raw.ErrorCode == 0 and len(raw.Times) == len(df):
+                limit = _winddata_to_frame(raw, wind_code)
+                base = pd.to_numeric(limit["pre_close"], errors="coerce")
+                up_ratio = pd.to_numeric(limit["maxup"], errors="coerce") / base - 1.0
+                down_ratio = 1.0 - pd.to_numeric(limit["maxdown"], errors="coerce") / base
+                df["upper_limit"] = df["pre_close"] * (1.0 + up_ratio)
+                df["lower_limit"] = df["pre_close"] * (1.0 - down_ratio)
+        except Exception:   # noqa: BLE001 - 涨跌停为增强信息，任何异常都不应阻断行情入库
+            pass
+        return df
 
     # 分钟线：w.wsi（日内序列 + BarSize）
     @staticmethod

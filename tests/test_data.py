@@ -9,8 +9,9 @@ import pandas as pd
 
 from quant.data import registry
 from quant.data.mysql_repo import TABLES, _aggregate_bars
-from quant.data.wind_source import (_from_wind_code, _finalize, _to_wind_code,
-                                    _winddata_to_frame)
+from quant.data.wind_source import (_DAILY_FIELDS, _DAILY_LIMIT_FIELDS,
+                                    _from_wind_code, _finalize, _to_wind_code,
+                                    _winddata_to_frame, WindSource)
 
 
 class FakeWindData:
@@ -46,17 +47,17 @@ def test_wind_source() -> None:
     assert _to_wind_code("801050.si") == "801050.SI"      # 后缀大小写不敏感
     assert _from_wind_code("801050.SI") == "si.801050"
 
-    # 2) 日线：按 wsd 真实形态构造（字段名大写 + trade_status 中文 +
-    #    涨跌停价 UP_HGA / DOWN_HGA——各板块幅度不同的权威值）
+    # 2) 日线：按 wsd 真实形态构造（字段名大写 + trade_status 中文）。
+    #    涨跌停不在行情请求里（由 _fetch_daily 以不复权口径二次请求换算），
+    #    故本组装层输入无涨跌停列时输出也不应报错（缺失即降级语义）。
     out = FakeWindData(
         fields=["OPEN", "HIGH", "LOW", "CLOSE", "PRE_CLOSE", "VOLUME", "AMT",
-                "PCT_CHG", "TURN", "TRADE_STATUS", "UP_HGA", "DOWN_HGA"],
+                "PCT_CHG", "TURN", "TRADE_STATUS"],
         times=[date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 4)],
         data=[[10.0, 10.2, 10.1], [10.5, 10.4, 10.3], [9.8, 10.0, 9.9],
               [10.3, 10.1, 9.95], [10.0, 10.3, 10.1], [1000, 1200, 900],
               [10300, 12120, 8955], [0.5, -1.94, -1.49], [1.2, 1.5, 1.1],
-              ["交易", "交易", "停牌"],
-              [11.0, 11.33, 11.11], [9.0, 9.27, 9.09]],
+              ["交易", "交易", "停牌"]],
     )
     df = _finalize(_winddata_to_frame(out, "600519.SH"),
                    "sh.600519", "1d", "2", minute=False)
@@ -69,10 +70,57 @@ def test_wind_source() -> None:
         "中文状态应归一：'交易'->1、'停牌'->0（直接 ==1 会全判为停牌）"
     assert df["close"].tolist() == [10.3, 10.1, 9.95]
     assert df["is_st"].eq(0).all() and df["adjust_flag"].eq(2).all()
-    assert df["upper_limit"].tolist() == [11.0, 11.33, 11.11], \
-        "Wind 涨停价（UP_HGA）应重命名为 upper_limit 列"
-    assert df["lower_limit"].tolist() == [9.0, 9.27, 9.09], \
-        "Wind 跌停价（DOWN_HGA）应重命名为 lower_limit 列"
+    assert "upper_limit" not in df.columns and "lower_limit" not in df.columns, \
+        "行情组装层无涨跌停输入时不应凭空造列（缺失入库 NULL，撮合回退估算）"
+
+    # 2b) 涨跌停幅度换算：_fetch_daily 双请求（行情 + 不复权幅度三件套）。
+    #     原始昨收 10.0、maxup 11.0 / maxdown 9.0 -> 幅度 10%（主板口径），
+    #     映射到前复权昨收 10.0/10.3 应得 11.0/11.33 与 9.0/9.27；
+    #     二次请求失败时涨跌停列缺失、行情主流程不受影响。
+    class FakeW:
+        """模拟 WindPy 的 w 对象：按请求字段串返回预置 WindData，并记录调用。"""
+
+        def __init__(self, responses):
+            self._responses = responses
+            self.calls = []
+
+        def wsd(self, code, fields, start, end, opts):
+            self.calls.append(fields)
+            return self._responses[fields]
+
+    daily_out = FakeWindData(
+        fields=["OPEN", "HIGH", "LOW", "CLOSE", "PRE_CLOSE", "VOLUME", "AMT",
+                "PCT_CHG", "TURN", "TRADE_STATUS"],
+        times=[date(2024, 1, 2), date(2024, 1, 3)],
+        data=[[10.0, 10.2], [10.5, 10.4], [9.8, 10.0],
+              [10.3, 10.1], [10.0, 10.3], [1000, 1200],
+              [10300, 12120], [0.5, -1.94], [1.2, 1.5], ["交易", "交易"]],
+    )
+    limit_out = FakeWindData(
+        fields=["PRE_CLOSE", "MAXUP", "MAXDOWN"],
+        times=[date(2024, 1, 2), date(2024, 1, 3)],
+        data=[[10.0, 10.0], [11.0, 11.0], [9.0, 9.0]],
+    )
+    fake = FakeW({",".join(_DAILY_FIELDS): daily_out,
+                  ",".join(_DAILY_LIMIT_FIELDS): limit_out})
+    dfl = WindSource._fetch_daily(fake, "600519.SH", "2024-01-02",
+                                  "2024-01-03", "2")
+    assert fake.calls == [",".join(_DAILY_FIELDS), ",".join(_DAILY_LIMIT_FIELDS)], \
+        "日线应发起两次 wsd 请求（行情 + 不复权涨跌停幅度）"
+    assert dfl["upper_limit"].round(4).tolist() == [11.0, 11.33], \
+        "涨停价应按 幅度=maxup/原始昨收 映射到前复权昨收（10% 幅度）"
+    assert dfl["lower_limit"].round(4).tolist() == [9.0, 9.27], \
+        "跌停价同理（9 折）"
+
+    fail_out = FakeWindData(fields=["OUTMESSAGE"], times=[date(2024, 1, 2)],
+                            data=[["CWSDService:invalid indicators."]],
+                            error_code=-40522007)
+    fake_fail = FakeW({",".join(_DAILY_FIELDS): daily_out,
+                       ",".join(_DAILY_LIMIT_FIELDS): fail_out})
+    dfl2 = WindSource._fetch_daily(fake_fail, "600519.SH", "2024-01-02",
+                                   "2024-01-03", "2")
+    assert "upper_limit" not in dfl2.columns, \
+        "幅度请求失败应静默放弃涨跌停列（降级语义），行情数据不受影响"
 
     # 3) 分钟线：按 wsi 真实形态构造（字段名小写、请求 amt 返回 amount）
     out_m = FakeWindData(
@@ -147,8 +195,8 @@ def test_data_registry() -> None:
     assert hasattr(_cm.Bar, "price_limits"), "Bar 应提供涨跌停价查询"
 
     # 1e) 日线表 DDL 与仓储输出含涨跌停权威价两列（B 方案链路）：
-    #     Wind up_hga/down_hga -> upper_limit/lower_limit 列入库，
-    #     分钟表无此列、加载时 JOIN 日线回填
+    #     Wind maxup/maxdown（原始价口径）按幅度换算 -> upper_limit/
+    #     lower_limit 列入库，分钟表无此列、加载时 JOIN 日线回填
     from quant.data.mysql_repo import DDL, _D_COLS, _OUT_COLS
     assert "upper_limit" in DDL and "lower_limit" in DDL, \
         "日线建表 DDL 应含涨跌停两列"
