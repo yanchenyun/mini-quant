@@ -238,14 +238,17 @@ class BacktestEngine:
                         0,
                     )
                 prices_arr, dts_arr, cnt = self._history[bar.code]
-                prices_arr[cnt] = bar.close
+                # 价格护栏（信号面与估值面同一判据）：无效收盘价（非正或
+                # NaN）记 NaN 进策略可见历史——rolling 指标遇 NaN 自然跳过，
+                # 0 价原样透传会砸穿均线/通道（动量 -100% 与 +inf、下轨失真
+                # 为 0）；同时不更新估值基准，维持最近有效收盘价，组合层
+                # "当日价→最近价→均价"的三级兜底只有在基准有效时才成立
+                close_valid = math.isfinite(bar.close) and bar.close > 0
+                prices_arr[cnt] = bar.close if close_valid else float("nan")
                 dts_arr[cnt] = bar.dt
                 cnt += 1
                 self._history[bar.code] = (prices_arr, dts_arr, cnt)
-                # 价格护栏：停牌/脏数据的非正价或 NaN 不更新估值基准，
-                # 维持最近有效收盘价——组合层"当日价→最近价→均价"的
-                # 三级兜底只有在基准本身有效时才成立
-                if math.isfinite(bar.close) and bar.close > 0:
+                if close_valid:
                     self._prices[bar.code] = bar.close
                     self._last_close[bar.code] = bar.close
         

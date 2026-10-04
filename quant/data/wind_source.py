@@ -16,7 +16,7 @@ WindPy 是万得金融终端配套的 Python 接口，数据质量与覆盖度�
    datetime.date / datetime.datetime 对象给出（不是字符串），
    需要自行组装成 DataFrame。
 
-与 Baostock / AKShare 的口径对齐（上层完全无感知）：
+与 Baostock 的口径对齐（上层完全无感知）：
 
 - 复权：本系统 1=后复权 2=前复权 3=不复权，对应 Wind 的 PriceAdj=B/F/(空)。
 - 频率：本系统 1d / 5min / 15min / 30min / 60min，对应 Wind 的 wsd / wsi 加 BarSize。
@@ -26,7 +26,7 @@ WindPy 是万得金融终端配套的 Python 接口，数据质量与覆盖度�
 
 分钟线的 pre_close / trade_status / is_st：Wind 分钟序列不提供，
 按既有约定给安全默认（可交易、非 ST、昨收 0），由仓储层 LEFT JOIN 日线表
-回填真实昨收——与 BaostockSource / AkshareSource 处理完全一致。
+回填真实昨收——与 BaostockSource 处理完全一致。
 
 字段降级：Wind 可请求的字段集合随终端版本与账号权限变化（例如指数没有
 换手率 turn）。因此把日线字段分成“全量”与“核心”两组：全量请求失败时
@@ -130,7 +130,7 @@ def _load_wind():
     except ImportError as exc:   # pragma: no cover - 取决于本机是否装 Wind
         raise ImportError(
             "未找到 WindPy。WindPy 随 Wind 金融终端分发、无法用 pip 安装；"
-            "请先安装并登录 Wind 金融终端，或改用 --source baostock / akshare。"
+            "请先安装并登录 Wind 金融终端，或改用 --source baostock。"
         ) from exc
     return w
 
@@ -225,7 +225,7 @@ def _finalize(df: pd.DataFrame, code: str, freq: str, adjust: str,
 
     # trade_date：分钟线取 dt 的日期部分，日线即 dt 本身
     df["trade_date"] = df["dt"].str[:10]
-    df["date"] = df["trade_date"]     # 向后兼容别名（与 AkshareSource 输出口径一致）
+    df["date"] = df["trade_date"]     # 向后兼容别名（统一输出列；日表时间列与引擎/Web 缺 dt 时的兜底列）
 
     if minute:
         # Wind 分钟序列不含昨收；由仓储层 JOIN 日线表回填
@@ -242,7 +242,7 @@ def _finalize(df: pd.DataFrame, code: str, freq: str, adjust: str,
     else:
         df["trade_status"] = 1        # 字段不可用（降级/分钟线）→ 安全默认：可交易
 
-    # is_st：Wind 未取该字段，给安全默认（与 AkshareSource 处理一致）；
+    # is_st：Wind 未取该字段，给安全默认（BaostockSource 分钟线同口径）；
     # 仓储层如需精确 ST 标记，可在日线表侧统一补充
     df["is_st"] = 0
 

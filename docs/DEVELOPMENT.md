@@ -5,7 +5,7 @@
 > 合规提示：本平台仅限个人研究自用，不对外提供服务、不构成投资建议。
 >
 > 版本演进：v0.1 日线回测 → v0.2 多频率（5 分钟）+ Web → v0.3 因子库 + 双源
-> → v0.4（Unreleased）Wind 数据源 + 策略注册表。详细变更历史见 `git log`。
+> → v0.4（Unreleased）Wind 数据源 + 策略注册表 + 移除 AKShare。详细变更历史见 `git log`。
 
 ---
 
@@ -40,7 +40,7 @@
 ├────────────────────────────────────────────────────────────┤
 │ backtest      回测层    事件驱动引擎 / 模拟撮合 / 风控链 / 绩效│
 ├────────────────────────────────────────────────────────────┤
-│ data          数据层    数据源适配器 × 3 / 仓储 / 时间归一     │
+│ data          数据层    数据源适配器 × 2 / 仓储 / 时间归一     │
 ├────────────────────────────────────────────────────────────┤
 │ core          ★领域层   models / abstractions / portfolio  │
 │               零 import 第三方（全系统"宪法"）                │
@@ -68,7 +68,7 @@
 | **O** 开闭 | 新策略 / 新因子 / 新数据源 = 新增实现 + 在各自的注册表登记一行，入口代码 0 改动；新风控 = 1 个子类 + 责任链装配一处；新频率另需补齐仓储读写分派与建表 DDL（各频率列口径本就不同） |
 | **L** 里氏替换 | 换撮合通道只需实现同一 `Broker` 协议并经引擎 broker 参数注入：主循环与策略代码 0 修改（`SimBroker` 只是缺省实现） |
 | **I** 接口隔离 | 策略只见 `StrategyContext` 窄接口（history 只到当前 bar） |
-| **D** 依赖倒置 | 引擎 / 策略依赖 core 抽象；MySQL / Baostock / AKShare / Wind 都是可替换插件 |
+| **D** 依赖倒置 | 引擎 / 策略依赖 core 抽象；MySQL / Baostock / Wind 都是可替换插件 |
 
 ---
 
@@ -91,7 +91,6 @@ mini-quant/
 │   │   ├── registry.py        数据源与频率注册表（本层清单单一来源：
 │   │   │                     数据源延迟导入、频率带行情表名）
 │   │   ├── baostock_source.py  Baostock 适配器（1d/5/15/30/60min）
-│   │   ├── akshare_source.py   AKShare 适配器（免费聚合多源，分钟分段请求）
 │   │   ├── wind_source.py      Wind 适配器（需本机 Wind 终端；延迟导入 + 字段降级）
 │   │   ├── mysql_repo.py      仓储：freq 分表 ods_d + ods_mi + 因子长表
 │   │   └── timeutil.py        时间戳归一（norm_dt：识别 17 位毫秒串等 5 种形态）
@@ -137,9 +136,9 @@ mini-quant/
 | `data/*_source.py` | 数据源适配器（Adapter） | 吸收各源脏格式，对上输出统一列 DataFrame（见 §3.1） |
 | `data/mysql_repo.py` | 仓储（Repository） | freq 分表 + upsert 幂等；分钟读取 LEFT JOIN 日线表回填涨跌停基准 |
 | `factor/base.py` | 因子注册表 | `register/get/available`；新因子 = 一个子类 + 一行注册 |
-| `factor/engine.py` | FactorEngine 纯计算 | 行情宽表 → 因子宽表 `[code, dt, <因子列…>]`；因子名与行情列冲突显式报错 |
+| `factor/engine.py` | FactorEngine 纯计算 | 行情宽表 → 因子宽表 `[code, dt, <因子列…>]`；因子名与行情列冲突显式报错；价格列无效值（非正或 NaN）计算前归一为 NaN |
 | `strategy/registry.py` | 策略注册表 | `ParamSpec` / `StrategySpec` / `build_strategy`；CLI 选项、Web 下拉与参数输入框、K 线辅助线全部由此驱动 |
-| `backtest/engine.py` | 事件驱动引擎 | 按 `trade_date` 分组驱动日界；预构建 numpy 数组消除 O(n²)；`submit` 时序异常记 rejects 不静默吞单；撮合通道经 broker 参数注入 |
+| `backtest/engine.py` | 事件驱动引擎 | 按 `trade_date` 分组驱动日界；预构建 numpy 数组消除 O(n²)；`submit` 时序异常记 rejects 不静默吞单；撮合通道经 broker 参数注入；无效收盘价护栏（history 记 NaN、估值维持最近有效价） |
 | `backtest/sim_broker.py` | 模拟撮合（缺省通道） | 信号次一 bar 开盘价成交；一字板拒单；限价单触及成交；挂单 TTL 默认 1（当日有效） |
 | `backtest/risk.py` | 风控责任链 | 顺序即优先级；`_pending_sell` 同日卖出防重；`rules=None` 用默认集、`[]` 表示无规则 |
 | `backtest/metrics.py` | 绩效纯函数 | 全部由净值曲线 + 成交记录推导；`periods_per_year` 参数化 |
@@ -173,7 +172,7 @@ mini-quant/
 
 | 接口 | 类型 | 职责 | 当前实现 | 可替换方向 |
 |---|---|---|---|---|
-| `MarketDataSource` | Protocol | 外部行情源 | `BaostockSource` / `AkshareSource` / `WindSource` | Tushare 等 |
+| `MarketDataSource` | Protocol | 外部行情源 | `BaostockSource` / `WindSource` | Tushare 等 |
 | `DataRepository` | Protocol | 本地行情仓储（四方法必备契约） | `MySQLBarRepo` | Parquet + DuckDB |
 | `Strategy` | ABC | 策略钩子 `on_init`/`on_bar`（必需）+ `on_new_day`（可选） | `strategy/` 下的内置策略（注册表自动发现） | 任意子类 |
 | `Factor` | ABC | 因子契约 `name`/`min_periods`/`compute` | `factor/builtin.py` 内置因子集 | 任意子类（注册即用） |
@@ -210,7 +209,7 @@ T+1 冻结 / 不足一手 / 风控拒绝）记入拒单日志。用标志位记�
 def fetch_bars(code, start, end, freq="1d", adjust="2") -> pd.DataFrame
 ```
 
-返回 §3.1 统一列。三个内置源输出**完全同构**，上层引擎 / 策略 / 仓储零感知。
+返回 §3.1 统一列。两个内置源输出**完全同构**，上层引擎 / 策略 / 仓储零感知。
 `wind_source.py` 提供两个可借鉴技巧：**延迟导入**第三方 SDK（未装终端的机器不受
 影响）；**字段降级容错**（全量字段失败时降级核心字段重试）。
 
@@ -348,9 +347,9 @@ from quant.data.registry import get_source
 from quant.strategy import build_strategy
 
 repo = get_repo()                          # 仓储工厂 → MySQLBarRepo
-SrcCls = get_source("akshare")             # 数据源工厂（返回类，方法均为 @staticmethod）
+SrcCls = get_source("baostock")            # 数据源工厂（返回类，方法均为 @staticmethod）
 n = ingest_bars("sh.600000", "2020-01-01", # 增量抓取入库（幂等），返回入库行数
-                source="akshare")          # source 必填关键字参数
+                source="baostock")         # source 必填关键字参数
 compute_factors("sh.600000", "2024-01-01",
                 names=["momentum_20"])     # 因子计算落库（names 必填，物化缓存，upsert 幂等）
 result, bars = run_backtest(               # 取数 → 跑回测，返回 (结果, 行情帧)
@@ -604,7 +603,7 @@ def fetch_bars(code: str, start: str) -> pd.DataFrame:
 | `test_data_registry` | 数据源/频率清单单一来源：仓储表名、CLI choices、Web 校验三处同源派生，未知取值报错 | 消除重复清单（OCP 的数据源侧） |
 | `test_silent_failure_regressions` | 四类静默失败缺陷锁定：下单返回值留痕、海龟离场不闩锁、停牌零价不污染估值、卖出成交回冲 | 一次代码审查确认的缺陷回归 |
 | `test_engine_lifecycle` | ctx.equity() 与日终快照同口径、同一引擎重复 run 两轮一致、_today_bar 日界清空 | 引擎运行态所有权（可重跑） |
-| `test_akshare_segment_errors` | AKShare 分钟分段：全部失败聚合抛错、部分失败保留数据并在 stderr 留痕（mock，无网络） | 失败要响（fail-loud）契约 |
+| `test_invalid_price_signal_isolation` | 无效价信号隔离：停牌 0 价不进策略可见 history（记 NaN）、不进因子输入（动量无 -100%/+inf、下轨不被砸穿），窗口滑过后恢复正常值 | 信号链路的数据质量护栏（估值护栏之外的另一半） |
 
 **改完任何代码都先跑一遍 smoke_test。** 需真实网络或 Wind 终端的数据源侧
 验证见 ReadMe §6.2：裸 TCP 探测端口，或直接调适配器拉一小段。
@@ -672,6 +671,7 @@ def fetch_bars(code: str, start: str) -> pd.DataFrame:
 | 4 | Web benchmark 与 K 线 x 轴错位 | 基准按 bar 粒度生成（设计决策 #12） |
 | 5 | Wind `w.wsd` 返回**大写**字段名（请求 `open` 回 `OPEN`，ErrorCode 仍为 0）+ `trade_status` 返回**中文**（`交易`/`停牌`）而非数字 | 适配器统一 `lower()` 归一 + 中文状态按"是否含停牌"归一（fail-open：未知值视为可交易）+ 出口必需列强校验（防坏数据静默入库） |
 | 6 | `__pycache__` 残留导致改动不生效 | 已设 `PYTHONDONTWRITEBYTECODE=1` 全局禁用 |
+| 7 | 停牌日行情的 0 价混入信号链路（动量算出 -100% 与 +inf、唐奇安下轨被砸穿为 0、均线塌陷） | 引擎 history 写入与 FactorEngine 输入双侧按 NaN 语义隔离无效价（估值护栏此前已修，两处共用同一判据：非正或 NaN 即无效） |
 
 ---
 
@@ -702,5 +702,5 @@ CI + 质量门禁（ruff + mypy strict 仅对 core/）；Web 分钟 K 线按日�
 | 未来函数（回测虚高） | 四道保险 + 冒烟测试逐点断言锁定 |
 | 过拟合 | 样本外验证、参数敏感性分析、寻优结果打折评估 |
 | 前复权历史漂移 | 切后复权双份存储 |
-| 数据源单点 | 三源互备（baostock / akshare / wind），`--source` 切换 |
+| 数据源单点 | 双源互备（baostock / wind），`--source` 切换 |
 | 文档腐化 | 大版本提交时同步更新两份文档 |

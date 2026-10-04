@@ -33,7 +33,7 @@
 | ---- | --------------------------- | ---------------------------- | ------------------------------------------ |
 | 语言   | Python                      | 3.12                         | 量化生态无可替代                                   |
 | 数据处理 | pandas                      | ≥ 2.0                        | DataFrame 贯穿全链路                            |
-| 数据源  | Baostock / AKShare / Wind   | ≥ 0.8.8 / ≥ 1.14 / 随终端       | 三源互备（无默认，`--source` 每次显式指定），输出列完全同构           |
+| 数据源  | Baostock / Wind   | ≥ 0.8.8 / 随终端       | 双源互备（无默认，`--source` 每次显式指定），输出列完全同构           |
 | 存储   | MySQL 8（PyMySQL）            | ≥ 1.1                        | 本机或局域网均可；仓储接口隔离，换 Parquet+DuckDB 只动 data 层 |
 | 回测   | 自研事件驱动内核                    | —                            | 每一行都懂、可控；比 vn.py 轻、比 backtrader 透明         |
 | Web  | FastAPI + uvicorn + ECharts | ≥ 0.110 / ≥ 0.29 / 5.5 (CDN) | 无构建工具，原生 HTML/JS                           |
@@ -49,7 +49,7 @@ pip install -r requirements.txt
 >   
 > Wind 终端的环境里可用（`import WindPy` 能找到即已就绪）；未装终端不影响
 >   
-> baostock / akshare 两个源的使用。
+> baostock 源的使用。
 
 
 
@@ -62,7 +62,7 @@ pip install -r requirements.txt
 | v0.1              | 日线回测核心      | 六层架构 + 双均线 + CLI                       |
 | v0.2              | 多频率 + A 股规则 | Bar 双时间字段 + freq 分表 + 5 分钟回测 + Web 控制台 |
 | v0.3              | 因子库 + 双数据源  | 因子 SSOT 内存即时算 + 声明式依赖 + 长表存储           |
-| v0.4 (Unreleased) | Wind 数据源 + 策略注册表 | 适配器三源互备 + 策略/参数注册表驱动（新增策略零入口改动） |
+| v0.4 (Unreleased) | Wind 数据源 + 策略注册表 | 双源互备（接入 Wind、移除 AKShare）+ 策略/参数注册表驱动（新增策略零入口改动） |
 
 
 
@@ -138,8 +138,7 @@ python -m quant.app.cli init-schema
 # ② 抓取日线入库（--source 必填；默认前复权；增量——自动从库里最新日期的次日开始续抓）
 python -m quant.app.cli ingest --code sh.600000 --start 2020-01-01 --source baostock
 
-# ②b 换数据源抓日线（免费聚合多源 / 需本机登录 Wind 终端）
-python -m quant.app.cli ingest --code sh.600000 --start 2020-01-01 --source akshare
+# ②b 换数据源抓日线（需本机登录 Wind 终端）
 python -m quant.app.cli ingest --code sh.600000 --start 2020-01-01 --source wind
 
 # ②c 抓取 5 分钟线（建议同时保留日线：分钟表的涨跌停基准依赖日线昨收关联）
@@ -178,7 +177,7 @@ python -m quant.app.cli serve --port 8000
 | 子命令               | 作用                                  | 是否需联网 |
 | ----------------- | ----------------------------------- | ----- |
 | `init-schema`     | 幂等建库建表（行情日表/分钟表/因子表）                | 否     |
-| `ingest`          | 增量抓取行情入库（数据源必填：baostock / akshare / wind） | 是     |
+| `ingest`          | 增量抓取行情入库（数据源必填：baostock / wind） | 是     |
 | `compute-factors` | 计算因子并落库（因子必填；物化缓存，upsert 幂等）         | 否     |
 | `backtest`        | 运行回测并打印绩效                           | 否     |
 | `repair-dt`       | 修复分钟表历史脏时间戳（幂等）                     | 否     |
@@ -242,15 +241,14 @@ K 线 + 策略辅助线 + 买卖点 + 净值对比 + 指标卡片 + 成交明细
 
 ## 6. 数据源选择与网络问题
 
-### 6.1 三源对比
+### 6.1 双源对比
 
 | 数据源            | 费用        | 前置条件                  | 特点                                              |
 | -------------- | --------- | --------------------- | ----------------------------------------------- |
 | `baostock`      | 免费        | 无                     | 稳定；走**裸 TCP 直连** `www.baostock.com:10030`，不支持代理 |
-| `akshare`      | 免费        | 无                     | 聚合多源（东财等 HTTP 接口）；分钟数据仅保留近期                     |
 | `wind`         | 需 Wind 账号 | 本机安装并**登录 Wind 金融终端** | 数据质量与覆盖度最优；走本地终端，完全不碰公网                         |
 
-三者输出列完全同构，上层零感知；数据源不设默认，每次 `ingest` 都用 `--source` 显式指定。
+两者输出列完全同构，上层零感知；数据源不设默认，每次 `ingest` 都用 `--source` 显式指定。
 
 ### 6.2 数据源连通性自检
 
@@ -272,10 +270,8 @@ baostock 侧的报错往往是假线索（客户端会吞掉连接异常），�
 | 现象                                                | 原因                                             | 处理                                                          |
 | ------------------------------------------------- | ---------------------------------------------- | ----------------------------------------------------------- |
 | baostock 报 `10002007 网络接收错误` / `WinError 10057`   | 10030 端口从当前网络不可达（baostock 客户端会吞掉连接异常，报错信息是假线索） | 按 §6.2 裸 TCP 探测确认 10030 端口可达性；不可达则换网络（如公司专线），或开代理 TUN 模式接管裸 TCP；或直接改用 `--source wind`（本地终端） |
-| akshare 报 `ProxyError`                            | 环境变量 `HTTP_PROXY/HTTPS_PROXY` 指向失效代理           | 清掉代理变量，或改为可用代理地址                                            |
-| akshare 拉东财接口超时/RST                               | 东财行情接口在当前网络被 SNI 层拦截                           | 走代理，或改用 `--source wind`                                     |
 | `ModuleNotFoundError: No module named 'baostock'` | 当前 Python 环境没装                                 | `pip install -r requirements.txt`；确认没有用错解释器                 |
-| `import WindPy` 失败                                | 本机未装 Wind 终端，或当前环境不在 Wind 安装路径                 | 用装了 WindPy 的环境；或改用 baostock / akshare                       |
+| `import WindPy` 失败                                | 本机未装 Wind 终端，或当前环境不在 Wind 安装路径                 | 用装了 WindPy 的环境；或改用 baostock                          |
 
 ---
 

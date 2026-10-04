@@ -22,6 +22,12 @@ class FactorEngine:
     def compute(bars: pd.DataFrame, names: list[str]) -> pd.DataFrame:
         """计算指定因子，返回因子宽表。
 
+        价格列的非正值与 NaN（停牌日行情、脏数据）在计算前统一归一为
+        NaN——无效样本沿 NaN 语义传播，rolling/shift 会自然跳过；0 价若
+        混入输入，动量会算出 -100% 与 +inf、通道下轨会被砸穿为 0。归一
+        只作用于本函数内的副本，调用方的行情帧不被改动；volume 不在此列
+        （停牌日零成交是真实值，量比等因子应如实看到它）。
+
         Args:
             bars: 统一列行情 DataFrame（至少含 code/dt/close/volume）。
             names: 因子名列表（须在因子注册表中已注册）。
@@ -41,6 +47,13 @@ class FactorEngine:
         clash = [n for n in names if n in bars.columns]
         if clash:
             raise ValueError(f"因子名与行情列冲突: {clash}")
+
+        # 无效价归一（口径见 docstring）：非正价格统一置 NaN 后再交给因子
+        bars = bars.copy()
+        for col in ("open", "high", "low", "close", "pre_close"):
+            if col in bars.columns:
+                numeric = pd.to_numeric(bars[col], errors="coerce")
+                bars[col] = numeric.where(numeric > 0)
 
         # 按标的分组计算（因子 compute 契约：输入单标的、按 dt 升序的行情帧）
         factors: list[Factor] = [get(n) for n in names]

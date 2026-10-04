@@ -9,9 +9,9 @@ choices 与 Web 端点的取值校验里。每加一个源或一个频率都要�
 
 SOURCES 声明数据源：名称、一句话说明、适配器模块名与类名。这里只存
 "模块名 + 类名"而不是直接导入实现类，是为了不把各数据源的第三方依赖
-绑到数据层上——baostock 与 akshare 的适配器在模块顶层 import 各自的库，
-若在本模块直接导入，未安装其中任意一家的环境连 CLI 都启动不了。真正的
-导入推迟到 get_source 调用时进行。
+绑到数据层上——baostock 的适配器在模块顶层 import 第三方库，若在本
+模块直接导入，未装该库的环境连 CLI 都启动不了。真正的导入推迟到
+get_source 调用时进行。
 
 FREQS 声明频率：名称、行情表名、一句话说明。仓储的表名映射（TABLES）
 与 CLI 的 --freq choices、Web 端点的取值校验全部由它派生。
@@ -58,8 +58,6 @@ class FreqSpec:
 SOURCES: tuple[SourceSpec, ...] = (
     SourceSpec("baostock", "免费稳定，日线与分钟线",
                "baostock_source", "BaostockSource"),
-    SourceSpec("akshare", "免费聚合多源，日线与分钟线",
-               "akshare_source", "AkshareSource"),
     SourceSpec("wind", "需本机安装并登录 Wind 终端",
                "wind_source", "WindSource"),
 )
@@ -86,8 +84,8 @@ def source_help() -> str:
 def get_source(name: str):
     """按名称取数据源类（工厂）。返回类而非实例，因其方法均为静态方法。
 
-    实现模块在调用时才导入：只用 baostock 的环境不必安装 akshare，
-    反之亦然。
+    实现模块在调用时才导入：只用 baostock 的环境不必为其它数据源安装
+    任何依赖。
 
     Raises:
         ValueError: 名称未登记（错误信息附带全部可选值）。

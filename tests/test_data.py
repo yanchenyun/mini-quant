@@ -5,8 +5,6 @@ import contextlib
 import io
 from datetime import date, datetime
 
-import pandas as pd
-
 from quant.data import registry
 from quant.data.mysql_repo import TABLES
 from quant.data.wind_source import (_from_wind_code, _finalize, _to_wind_code,
@@ -104,7 +102,7 @@ def test_data_registry() -> None:
     from quant.webapp.server import backtest as backtest_endpoint
 
     sources, freqs = registry.available_sources(), registry.available_freqs()
-    assert sources == ["baostock", "akshare", "wind"], sources
+    assert sources == ["baostock", "wind"], sources
     assert freqs[0] == "1d" and "5min" in freqs, freqs
 
     # 1) 仓储表名映射由注册表派生（不再是第二份清单）
@@ -153,62 +151,3 @@ def test_data_registry() -> None:
         else:
             raise AssertionError(f"{bad} 应抛 ValueError")
     print("数据源/频率注册表用例通过 ✓")
-
-
-def test_akshare_segment_errors() -> None:
-    """AKShare 分钟分段：全部失败显式抛错（含原因），部分失败保留数据并告警。
-
-    用 mock 替换底层接口，不发起任何网络请求；重试包装临时替换为单次
-    尝试以缩短用例耗时（重试本身的正确性不是本用例的关注点）。
-    """
-    try:
-        from quant.data import akshare_source as aks
-    except Exception as e:      # akshare 未安装的环境直接跳过
-        print(f"akshare 不可导入，跳过分段异常用例: {e}")
-        return
-
-    orig_fetch = aks.ak.stock_zh_a_hist_min_em
-    orig_retry = aks._retry
-    aks._retry = lambda fn, *a, **k: fn()      # 单次尝试，绕开退避等待
-
-    calls = {"n": 0}
-
-    def flaky_fetch(**kw):
-        calls["n"] += 1
-        if calls["n"] == 1:
-            raise ConnectionError("网络中断")
-        return pd.DataFrame({
-            "时间": ["2024-01-31 09:35:00", "2024-01-31 09:40:00"],
-            "开盘": [10.0, 10.1], "收盘": [10.05, 10.12],
-            "最高": [10.1, 10.15], "最低": [9.98, 10.0],
-            "成交量": [100, 200], "成交额": [1005, 2024],
-        })
-
-    def boom(**kw):
-        raise ConnectionError("网络中断")
-
-    try:
-        # 1) 部分失败：首段抛错、次段成功 → 保留成功数据 + stderr 告警留痕
-        aks.ak.stock_zh_a_hist_min_em = flaky_fetch
-        err = io.StringIO()
-        with contextlib.redirect_stderr(err):
-            df = aks.AkshareSource._fetch_minute("600000", "2024-01-01",
-                                                 "2024-02-01", "5min", "qfq")
-        assert len(df) == 2, f"成功分段的数据应保留，实际 {len(df)} 行"
-        assert "分段拉取失败" in err.getvalue(), \
-            f"部分失败应在 stderr 留痕: {err.getvalue()}"
-        assert "网络中断" in err.getvalue()
-
-        # 2) 全部失败：聚合各段原因抛 RuntimeError，不再静默返回空表
-        aks.ak.stock_zh_a_hist_min_em = boom
-        try:
-            aks.AkshareSource._fetch_minute("600000", "2024-01-01",
-                                             "2024-02-01", "5min", "qfq")
-        except RuntimeError as e:
-            assert "全部分段" in str(e) and "网络中断" in str(e), e
-        else:
-            raise AssertionError("全部分段失败应抛 RuntimeError 而非返回空表")
-    finally:
-        aks.ak.stock_zh_a_hist_min_em = orig_fetch
-        aks._retry = orig_retry
-    print("AKShare 分段异常用例通过 ✓")

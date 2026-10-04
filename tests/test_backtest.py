@@ -2,9 +2,12 @@
 
 覆盖：日线 / 5 分钟频率的行为基线、通道注入（LSP）、引擎生命周期
 （ctx.equity 估值口径 / run 幂等重跑 / _today_bar 日界清空）、
-以及一次代码审查确认的四类静默失败缺陷锁定。
+一次代码审查确认的四类静默失败缺陷锁定，以及无效价在信号链路
+（history / 因子输入）的 NaN 语义隔离回归。
 """
 from __future__ import annotations
+
+import math
 
 import numpy as np
 import pandas as pd
@@ -364,3 +367,64 @@ def test_silent_failure_regressions() -> None:
     assert len(cash_rejects) == 1, \
         f"重复买入应记一条现金不足拒单: {r4.rejects}"
     print("静默失败回归用例通过 ✓")
+
+
+class HistoryTailProbe(Strategy):
+    """探针策略：逐 bar 记录 ctx.history 末值（校验无效价不进入策略可见历史）。"""
+
+    def __init__(self):
+        self.params: dict = {}
+        self.required_factors: list[str] = []
+        self.tail_values: list[float] = []
+
+    def on_init(self, ctx: StrategyContext) -> None:
+        self.tail_values = []
+
+    def on_bar(self, ctx: StrategyContext, bar) -> None:
+        self.tail_values.append(float(ctx.history.iloc[-1]))
+
+
+def test_invalid_price_signal_isolation() -> None:
+    """无效价隔离：停牌 0 价不得进入策略可见 history 与因子输入。
+
+    估值基准的护栏（_prices 不被 0 覆盖）此前已修；本用例锁定同一根
+    脏 bar 在信号链路上的两个入口——引擎 history 写入与 FactorEngine
+    输入，均按 NaN 语义传播（rolling 指标因 NaN 自然跳过，窗口滑过
+    后恢复正常值，不残留）。
+    """
+    bars = make_bars(days=60)
+    idx = 25
+    for col in ("open", "high", "low", "close"):
+        bars.loc[idx, col] = 0.0
+    bars.loc[idx, "trade_status"] = 0
+
+    # 1) 引擎侧：停牌 bar 在策略可见 history 中记 NaN（而非 0 砸穿均线）
+    probe = HistoryTailProbe()
+    engine = BacktestEngine(bars=bars, strategy=probe, init_cash=1_000_000,
+                            cost=CostModel())
+    engine.run()
+    assert math.isnan(probe.tail_values[idx]), \
+        "停牌 0 价不应进入策略可见 history"
+    assert probe.tail_values[idx - 1] > 0 and probe.tail_values[idx + 1] > 0, \
+        "停牌前后正常 bar 的 history 值不受影响"
+
+    # 2) 因子侧：停牌行及其污染窗口内因子值为 NaN，窗口滑过后恢复真实值
+    frame = FactorEngine.compute(bars, ["momentum_20", "donchian_low_10"])
+    assert math.isnan(frame["momentum_20"].iloc[idx]), \
+        "停牌日动量应为 NaN（不得被 0 价算成 -100%）"
+    assert math.isnan(frame["momentum_20"].iloc[idx + 20]), \
+        "shift 分母为停牌 0 价时动量应为 NaN（不得 +inf）"
+    assert not math.isnan(frame["momentum_20"].iloc[idx + 21]), \
+        "窗口滑过后动量应恢复正常值"
+    assert math.isnan(frame["donchian_low_10"].iloc[idx + 1]), \
+        "停牌 0 价进入窗口时下轨应为 NaN（不得被砸穿为 0）"
+    assert frame["donchian_low_10"].iloc[idx + 11] > 0, \
+        "窗口滑过后下轨应恢复真实值"
+
+    # 3) 全链路冒烟：history 含 NaN 时双均线不产生假信号（交叉比较对
+    #    NaN 恒为 False，策略静默跳过该段），权益曲线保持健康
+    r = BacktestEngine(bars=bars, strategy=DoubleMAStrategy(5, 20),
+                       init_cash=1_000_000, cost=CostModel()).run()
+    assert len(r.equity_curve) == len(bars)
+    assert r.metrics["final_equity"] > 0
+    print("无效价隔离用例通过 ✓")
